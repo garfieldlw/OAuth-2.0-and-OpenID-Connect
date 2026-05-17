@@ -1,0 +1,715 @@
+basePath: /
+definitions:
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.AuthContextResponse:
+    properties:
+      client_id:
+        type: string
+      scope:
+        type: string
+      user_id:
+        type: string
+    type: object
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.AuthDecisionRequest:
+    properties:
+      authorize:
+        type: boolean
+      deny:
+        type: boolean
+    type: object
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.AuthDecisionResponse:
+    properties:
+      redirect:
+        type: string
+    type: object
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse:
+    properties:
+      error:
+        example: invalid_request
+        type: string
+      error_description:
+        example: The request is missing a required parameter.
+        type: string
+    type: object
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.LoginRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.LoginResponse:
+    properties:
+      redirect:
+        type: string
+    type: object
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.LoginStatusResponse:
+    properties:
+      logged_in:
+        type: boolean
+      redirect:
+        type: string
+    type: object
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.OIDCDiscovery:
+    properties:
+      authorization_endpoint:
+        type: string
+      claims_supported:
+        items:
+          type: string
+        type: array
+      code_challenge_methods_supported:
+        items:
+          type: string
+        type: array
+      grant_types_supported:
+        items:
+          type: string
+        type: array
+      id_token_signing_alg_values_supported:
+        items:
+          type: string
+        type: array
+      issuer:
+        type: string
+      jwks_uri:
+        type: string
+      registration_endpoint:
+        type: string
+      response_types_supported:
+        items:
+          type: string
+        type: array
+      scopes_supported:
+        items:
+          type: string
+        type: array
+      subject_types_supported:
+        items:
+          type: string
+        type: array
+      token_endpoint:
+        type: string
+      token_endpoint_auth_methods_supported:
+        items:
+          type: string
+        type: array
+      userinfo_endpoint:
+        type: string
+    type: object
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.TokenResponse:
+    properties:
+      access_token:
+        example: eyJhbGciOiJSUzI1NiIs...
+        type: string
+      expires_in:
+        example: 7200
+        type: integer
+      id_token:
+        example: eyJhbGciOiJSUzI1NiIs...
+        type: string
+      refresh_token:
+        example: ODk4YWY2Njkt...
+        type: string
+      scope:
+        example: openid profile
+        type: string
+      token_type:
+        example: Bearer
+        type: string
+    type: object
+  github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.UserInfoResponse:
+    properties:
+      email:
+        example: admin@example.com
+        type: string
+      email_verified:
+        example: true
+        type: boolean
+      name:
+        example: Admin User
+        type: string
+      sub:
+        example: "1"
+        type: string
+    type: object
+host: localhost:9096
+info:
+  contact: {}
+  description: |-
+    Go implementation of OAuth 2.0 Authorization Server and OpenID Connect 1.0 Provider.
+    Supports authorization code (with PKCE), password, client_credentials, and refresh_token grants per OAuth 2.1.
+    Implicit and hybrid flows are removed per OAuth 2.1 security recommendations.
+    Issues JWT access tokens and ID tokens signed with RS256. Provides JWKS and OIDC Discovery endpoints.
+  title: OAuth 2.0 + OpenID Connect Server
+  version: "1.0"
+paths:
+  /.well-known/jwks.json:
+    get:
+      description: Returns the server's public RSA key in JWK format used to verify
+        JWT signatures (RS256). Cacheable for 3600 seconds.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: JSON Web Key Set
+      tags:
+      - OIDC
+  /.well-known/openid-configuration:
+    get:
+      description: Returns the OpenID Provider Configuration Information as specified
+        in OpenID Connect Discovery 1.0.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.OIDCDiscovery'
+      summary: OIDC Discovery Document
+      tags:
+      - OIDC
+  /api/auth:
+    get:
+      consumes:
+      - application/json
+      description: |-
+        Returns the consent page context for the current authorization request, including the logged-in user ID, client ID, and requested scope. Requires an active user session.
+        Submits the user's consent decision (approve or deny) for the current authorization request. On approval, returns the stored ReturnURI (the original /oauth/authorize URL) so the frontend can redirect the browser. On denial, returns a redirect URI with error=access_denied.
+      parameters:
+      - description: Client identifier from the authorize request
+        in: query
+        name: client_id
+        type: string
+      - description: Space-delimited scopes from the authorize request
+        in: query
+        name: scope
+        type: string
+      - description: Authorization decision
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.AuthDecisionRequest'
+      produces:
+      - application/json
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.AuthDecisionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: Submit authorization decision
+      tags:
+      - Auth
+      - Auth
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Returns the consent page context for the current authorization request, including the logged-in user ID, client ID, and requested scope. Requires an active user session.
+        Submits the user's consent decision (approve or deny) for the current authorization request. On approval, returns the stored ReturnURI (the original /oauth/authorize URL) so the frontend can redirect the browser. On denial, returns a redirect URI with error=access_denied.
+      parameters:
+      - description: Client identifier from the authorize request
+        in: query
+        name: client_id
+        type: string
+      - description: Space-delimited scopes from the authorize request
+        in: query
+        name: scope
+        type: string
+      - description: Authorization decision
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.AuthDecisionRequest'
+      produces:
+      - application/json
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.AuthDecisionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: Submit authorization decision
+      tags:
+      - Auth
+      - Auth
+  /api/login:
+    get:
+      consumes:
+      - application/json
+      description: |-
+        Returns whether the current session has an authenticated user. If logged in, also returns the redirect URI stored in the session.
+        Authenticates a user with username and password. Creates a server-side session and returns a redirect URI (either the stored ReturnURI from a prior authorize attempt, or /auth).
+      parameters:
+      - description: Login credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.LoginRequest'
+      produces:
+      - application/json
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.LoginResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: Authenticate user
+      tags:
+      - Auth
+      - Auth
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Returns whether the current session has an authenticated user. If logged in, also returns the redirect URI stored in the session.
+        Authenticates a user with username and password. Creates a server-side session and returns a redirect URI (either the stored ReturnURI from a prior authorize attempt, or /auth).
+      parameters:
+      - description: Login credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.LoginRequest'
+      produces:
+      - application/json
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.LoginResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: Authenticate user
+      tags:
+      - Auth
+      - Auth
+  /api/test:
+    get:
+      description: Validates the Bearer access token from the Authorization header.
+        Sets TokenInfo in the Gin context on success.
+      parameters:
+      - description: Bearer access token
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token valid, TokenInfo set in context
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: Bearer Token Verification Middleware
+      tags:
+      - API
+  /logout:
+    get:
+      description: Ends the user session and redirects to the login page or the post_logout_redirect_uri.
+      parameters:
+      - description: URI to redirect after logout
+        in: query
+        name: post_logout_redirect_uri
+        type: string
+      produces:
+      - application/json
+      responses:
+        "302":
+          description: Redirect to login or post_logout_redirect_uri
+          schema:
+            type: string
+      summary: End Session
+      tags:
+      - OAuth2
+  /oauth/authorize:
+    get:
+      consumes:
+      - application/json
+      - application/x-www-form-urlencoded
+      description: Authenticates the resource owner and issues an authorization code.
+        Requires an active user session. Implicit and hybrid flows are removed per
+        OAuth 2.1 security recommendations.
+      parameters:
+      - description: Response type
+        enum:
+        - code
+        in: query
+        name: response_type
+        required: true
+        type: string
+      - description: Client identifier
+        in: query
+        name: client_id
+        required: true
+        type: string
+      - description: Redirect URI registered for the client
+        in: query
+        name: redirect_uri
+        required: true
+        type: string
+      - description: Space-delimited scopes (e.g. openid profile email)
+        in: query
+        name: scope
+        type: string
+      - description: Opaque value returned to the client
+        in: query
+        name: state
+        type: string
+      - description: Nonce for ID token replay protection (recommended when scope
+          includes openid)
+        in: query
+        name: nonce
+        type: string
+      - description: PKCE code challenge
+        in: query
+        name: code_challenge
+        type: string
+      - description: PKCE method
+        enum:
+        - S256
+        in: query
+        name: code_challenge_method
+        type: string
+      produces:
+      - application/json
+      responses:
+        "302":
+          description: Redirect to redirect_uri with authorization code in query
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: OAuth 2.0 / OIDC Authorization Endpoint
+      tags:
+      - OAuth2
+    post:
+      consumes:
+      - application/json
+      - application/x-www-form-urlencoded
+      description: Authenticates the resource owner and issues an authorization code.
+        Requires an active user session. Implicit and hybrid flows are removed per
+        OAuth 2.1 security recommendations.
+      parameters:
+      - description: Response type
+        enum:
+        - code
+        in: query
+        name: response_type
+        required: true
+        type: string
+      - description: Client identifier
+        in: query
+        name: client_id
+        required: true
+        type: string
+      - description: Redirect URI registered for the client
+        in: query
+        name: redirect_uri
+        required: true
+        type: string
+      - description: Space-delimited scopes (e.g. openid profile email)
+        in: query
+        name: scope
+        type: string
+      - description: Opaque value returned to the client
+        in: query
+        name: state
+        type: string
+      - description: Nonce for ID token replay protection (recommended when scope
+          includes openid)
+        in: query
+        name: nonce
+        type: string
+      - description: PKCE code challenge
+        in: query
+        name: code_challenge
+        type: string
+      - description: PKCE method
+        enum:
+        - S256
+        in: query
+        name: code_challenge_method
+        type: string
+      produces:
+      - application/json
+      responses:
+        "302":
+          description: Redirect to redirect_uri with authorization code in query
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: OAuth 2.0 / OIDC Authorization Endpoint
+      tags:
+      - OAuth2
+  /oauth/token:
+    get:
+      consumes:
+      - application/x-www-form-urlencoded
+      description: Issues tokens based on the grant type. Supports authorization_code,
+        password, client_credentials, and refresh_token grants. Returns id_token when
+        scope includes openid and a user context exists.
+      parameters:
+      - description: Grant type
+        enum:
+        - authorization_code
+        - password
+        - client_credentials
+        - refresh_token
+        in: formData
+        name: grant_type
+        required: true
+        type: string
+      - description: Client identifier (required if not using Authorization header)
+        in: formData
+        name: client_id
+        type: string
+      - description: Client secret
+        in: formData
+        name: client_secret
+        type: string
+      - description: Authorization code (authorization_code grant)
+        in: formData
+        name: code
+        type: string
+      - description: Redirect URI (authorization_code grant)
+        in: formData
+        name: redirect_uri
+        type: string
+      - description: Space-delimited scopes
+        in: formData
+        name: scope
+        type: string
+      - description: Username (password grant)
+        in: formData
+        name: username
+        type: string
+      - description: Password (password grant)
+        in: formData
+        name: password
+        type: string
+      - description: Refresh token (refresh_token grant)
+        in: formData
+        name: refresh_token
+        type: string
+      - description: PKCE code verifier
+        in: formData
+        name: code_verifier
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.TokenResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: OAuth 2.0 Token Endpoint
+      tags:
+      - OAuth2
+    post:
+      consumes:
+      - application/x-www-form-urlencoded
+      description: Issues tokens based on the grant type. Supports authorization_code,
+        password, client_credentials, and refresh_token grants. Returns id_token when
+        scope includes openid and a user context exists.
+      parameters:
+      - description: Grant type
+        enum:
+        - authorization_code
+        - password
+        - client_credentials
+        - refresh_token
+        in: formData
+        name: grant_type
+        required: true
+        type: string
+      - description: Client identifier (required if not using Authorization header)
+        in: formData
+        name: client_id
+        type: string
+      - description: Client secret
+        in: formData
+        name: client_secret
+        type: string
+      - description: Authorization code (authorization_code grant)
+        in: formData
+        name: code
+        type: string
+      - description: Redirect URI (authorization_code grant)
+        in: formData
+        name: redirect_uri
+        type: string
+      - description: Space-delimited scopes
+        in: formData
+        name: scope
+        type: string
+      - description: Username (password grant)
+        in: formData
+        name: username
+        type: string
+      - description: Password (password grant)
+        in: formData
+        name: password
+        type: string
+      - description: Refresh token (refresh_token grant)
+        in: formData
+        name: refresh_token
+        type: string
+      - description: PKCE code verifier
+        in: formData
+        name: code_verifier
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.TokenResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: OAuth 2.0 Token Endpoint
+      tags:
+      - OAuth2
+  /userinfo:
+    get:
+      consumes:
+      - application/json
+      - application/x-www-form-urlencoded
+      description: Returns claims about the authenticated end-user. Requires a valid
+        Bearer access token with openid scope.
+      parameters:
+      - description: Bearer access token
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.UserInfoResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: OIDC UserInfo Endpoint
+      tags:
+      - OIDC
+    post:
+      consumes:
+      - application/json
+      - application/x-www-form-urlencoded
+      description: Returns claims about the authenticated end-user. Requires a valid
+        Bearer access token with openid scope.
+      parameters:
+      - description: Bearer access token
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.UserInfoResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: OIDC UserInfo Endpoint
+      tags:
+      - OIDC
+swagger: "2.0"
