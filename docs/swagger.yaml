@@ -506,8 +506,14 @@ paths:
       - application/x-www-form-urlencoded
       description: Issues tokens based on the grant type. Supports authorization_code,
         password, client_credentials, and refresh_token grants. Returns id_token when
-        scope includes openid and a user context exists.
+        scope includes openid and a user context exists. Client authentication via
+        Authorization header (client_secret_basic) takes precedence over body params
+        (client_secret_post) per RFC 6749 §2.3.1.
       parameters:
+      - description: 'Client credentials via HTTP Basic: Basic base64(client_id:client_secret)'
+        in: header
+        name: Authorization
+        type: string
       - description: Grant type
         enum:
         - authorization_code
@@ -522,7 +528,7 @@ paths:
         in: formData
         name: client_id
         type: string
-      - description: Client secret
+      - description: Client secret (required if not using Authorization header)
         in: formData
         name: client_secret
         type: string
@@ -581,8 +587,14 @@ paths:
       - application/x-www-form-urlencoded
       description: Issues tokens based on the grant type. Supports authorization_code,
         password, client_credentials, and refresh_token grants. Returns id_token when
-        scope includes openid and a user context exists.
+        scope includes openid and a user context exists. Client authentication via
+        Authorization header (client_secret_basic) takes precedence over body params
+        (client_secret_post) per RFC 6749 §2.3.1.
       parameters:
+      - description: 'Client credentials via HTTP Basic: Basic base64(client_id:client_secret)'
+        in: header
+        name: Authorization
+        type: string
       - description: Grant type
         enum:
         - authorization_code
@@ -597,7 +609,7 @@ paths:
         in: formData
         name: client_id
         type: string
-      - description: Client secret
+      - description: Client secret (required if not using Authorization header)
         in: formData
         name: client_secret
         type: string

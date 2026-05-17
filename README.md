@@ -14,6 +14,7 @@ A native Go implementation of an **OAuth 2.1** Authorization Server and **OpenID
 - **OpenID Connect 1.0** — ID tokens as a first-class citizen, generated inline when `scope=openid`
 - **JWT RS256** — Access tokens and ID tokens signed with RSA-2048 (RS256)
 - **PKCE** — S256 and plain code challenge methods supported
+- **Client Authentication** — `client_secret_basic` (Authorization header) and `client_secret_post` (body params) per RFC 6749 §2.3.1
 - **JWKS & Discovery** — Standard OIDC endpoints for key distribution and provider metadata
 - **Refresh Token Rotation** — Old tokens revoked on exchange, new pair issued
 - **Rate Limiting** — Token endpoint protected (10 req/min/IP)
@@ -408,7 +409,22 @@ Location: http://localhost:9094?code=RECEIVED_AUTH_CODE&state=xyz123
 
 #### ⑬ Token Exchange
 
-The client exchanges the authorization code for tokens at the token endpoint:
+The client exchanges the authorization code for tokens at the token endpoint. Client credentials can be provided via the Authorization header (`client_secret_basic`) or the request body (`client_secret_post`), per RFC 6749 §2.3.1. The Authorization header takes precedence if both are present.
+
+**Using Authorization header (client_secret_basic):**
+
+```
+POST /oauth/token
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic base64(client_id:client_secret)
+
+grant_type=authorization_code
+&code=RECEIVED_AUTH_CODE
+&redirect_uri=http://localhost:9094
+&code_verifier=ORIGINAL_CODE_VERIFIER
+```
+
+**Using request body (client_secret_post):**
 
 ```
 POST /oauth/token
@@ -427,9 +443,10 @@ grant_type=authorization_code
 | `grant_type` | Yes | Must be `authorization_code` |
 | `code` | Yes | The authorization code received in step ⑫ |
 | `redirect_uri` | Yes | Must match the `redirect_uri` from step ② |
-| `client_id` | Yes | Client identifier |
-| `client_secret` | Yes | Client secret (for confidential clients) |
+| `client_id` | Conditional | Client identifier (required if not using Authorization header) |
+| `client_secret` | Conditional | Client secret (required if not using Authorization header) |
 | `code_verifier` | Conditional | The original PKCE verifier from step ①. Required if `code_challenge` was sent in step ②. |
+| `Authorization` | Conditional | `Basic base64(client_id:client_secret)` — takes precedence over body params |
 
 #### ⑭ PKCE Verification & Token Generation
 
@@ -555,13 +572,22 @@ echo "Authorization code: $AUTH_CODE"
 # ─── Step ⑬⑭⑮: Exchange code for tokens ───
 echo ""
 echo "Exchanging authorization code for tokens..."
+# Option A: Using Authorization header (client_secret_basic, recommended)
 TOKEN_RESP=$(curl -s -X POST "${SERVER}/oauth/token" \
+  -u "${CLIENT_ID}:${CLIENT_SECRET}" \
   -d "grant_type=authorization_code" \
   -d "code=${AUTH_CODE}" \
   -d "redirect_uri=${REDIRECT_URI}" \
-  -d "client_id=${CLIENT_ID}" \
-  -d "client_secret=${CLIENT_SECRET}" \
   -d "code_verifier=${CODE_VERIFIER}")
+
+# Option B: Using request body (client_secret_post)
+# TOKEN_RESP=$(curl -s -X POST "${SERVER}/oauth/token" \
+#   -d "grant_type=authorization_code" \
+#   -d "code=${AUTH_CODE}" \
+#   -d "redirect_uri=${REDIRECT_URI}" \
+#   -d "client_id=${CLIENT_ID}" \
+#   -d "client_secret=${CLIENT_SECRET}" \
+#   -d "code_verifier=${CODE_VERIFIER}")
 echo "Token response:"
 echo "$TOKEN_RESP" | python3 -m json.tool 2>/dev/null || echo "$TOKEN_RESP"
 
@@ -613,36 +639,38 @@ VerifyPKCE(challenge, method, verifier) → bool
 
 ## Other Grant Types
 
+All grant types support both `client_secret_basic` (Authorization header) and `client_secret_post` (body params) for client authentication. The `-u client_id:client_secret` flag in curl sets the `Authorization: Basic` header automatically.
+
 ### Password Grant
 
 ```bash
+# Using Authorization header (client_secret_basic)
 curl -X POST http://localhost:9096/oauth/token \
+  -u 000000:999999 \
   -d "grant_type=password" \
   -d "username=admin" \
   -d "password=admin" \
-  -d "client_id=000000" \
-  -d "client_secret=999999" \
   -d "scope=openid profile email"
 ```
 
 ### Client Credentials Grant
 
 ```bash
+# Using Authorization header (client_secret_basic)
 curl -X POST http://localhost:9096/oauth/token \
+  -u 000000:999999 \
   -d "grant_type=client_credentials" \
-  -d "client_id=000000" \
-  -d "client_secret=999999" \
   -d "scope=profile email"
 ```
 
 ### Refresh Token
 
 ```bash
+# Using Authorization header (client_secret_basic)
 curl -X POST http://localhost:9096/oauth/token \
+  -u 000000:999999 \
   -d "grant_type=refresh_token" \
-  -d "refresh_token=YOUR_REFRESH_TOKEN" \
-  -d "client_id=000000" \
-  -d "client_secret=999999"
+  -d "refresh_token=YOUR_REFRESH_TOKEN"
 ```
 
 ### UserInfo
@@ -703,6 +731,7 @@ swag init -g cmd/server/main.go -o ./docs --parseDependency --parseInternal
 - **Rate limiting** — token endpoint: 10 requests/minute per IP
 - **Session cookies** — httpOnly, SameSite=Lax (dev) / Secure+Strict (prod via `OAUTH_SECURE_COOKIE`)
 - **Login gate** — authorize endpoint redirects to `/login` if not authenticated
+- **Client authentication** — `client_secret_basic` (Authorization header) and `client_secret_post` (body params) supported per RFC 6749 §2.3.1; conflicting credentials rejected with `invalid_client`
 - **Client secrets** — never logged or exposed in responses
 
 ## Known Limitations

@@ -521,7 +521,7 @@ const docTemplate = `{
         },
         "/oauth/token": {
             "get": {
-                "description": "Issues tokens based on the grant type. Supports authorization_code, password, client_credentials, and refresh_token grants. Returns id_token when scope includes openid and a user context exists.",
+                "description": "Issues tokens based on the grant type. Supports authorization_code, password, client_credentials, and refresh_token grants. Returns id_token when scope includes openid and a user context exists. Client authentication via Authorization header (client_secret_basic) takes precedence over body params (client_secret_post) per RFC 6749 §2.3.1.",
                 "consumes": [
                     "application/x-www-form-urlencoded"
                 ],
@@ -533,6 +533,12 @@ const docTemplate = `{
                 ],
                 "summary": "OAuth 2.0 Token Endpoint",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client credentials via HTTP Basic: Basic base64(client_id:client_secret)",
+                        "name": "Authorization",
+                        "in": "header"
+                    },
                     {
                         "enum": [
                             "authorization_code",
@@ -554,7 +560,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Client secret",
+                        "description": "Client secret (required if not using Authorization header)",
                         "name": "client_secret",
                         "in": "formData"
                     },
@@ -629,7 +635,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Issues tokens based on the grant type. Supports authorization_code, password, client_credentials, and refresh_token grants. Returns id_token when scope includes openid and a user context exists.",
+                "description": "Issues tokens based on the grant type. Supports authorization_code, password, client_credentials, and refresh_token grants. Returns id_token when scope includes openid and a user context exists. Client authentication via Authorization header (client_secret_basic) takes precedence over body params (client_secret_post) per RFC 6749 §2.3.1.",
                 "consumes": [
                     "application/x-www-form-urlencoded"
                 ],
@@ -641,6 +647,12 @@ const docTemplate = `{
                 ],
                 "summary": "OAuth 2.0 Token Endpoint",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client credentials via HTTP Basic: Basic base64(client_id:client_secret)",
+                        "name": "Authorization",
+                        "in": "header"
+                    },
                     {
                         "enum": [
                             "authorization_code",
@@ -662,7 +674,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Client secret",
+                        "description": "Client secret (required if not using Authorization header)",
                         "name": "client_secret",
                         "in": "formData"
                     },
