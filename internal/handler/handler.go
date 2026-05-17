@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-session/session/v3"
@@ -223,13 +225,14 @@ func (h *Handler) Authorize(c *gin.Context) {
 
 // Token godoc
 // @Summary OAuth 2.0 Token Endpoint
-// @Description Issues tokens based on the grant type. Supports authorization_code, password, client_credentials, and refresh_token grants. Returns id_token when scope includes openid and a user context exists.
+// @Description Issues tokens based on the grant type. Supports authorization_code, password, client_credentials, and refresh_token grants. Returns id_token when scope includes openid and a user context exists. Client authentication via Authorization header (client_secret_basic) takes precedence over body params (client_secret_post) per RFC 6749 §2.3.1.
 // @Tags OAuth2
 // @Accept application/x-www-form-urlencoded
 // @Produce json
+// @Param Authorization header string false "Client credentials via HTTP Basic: Basic base64(client_id:client_secret)"
 // @Param grant_type formData string true "Grant type" Enums(authorization_code, password, client_credentials, refresh_token)
 // @Param client_id formData string false "Client identifier (required if not using Authorization header)"
-// @Param client_secret formData string false "Client secret"
+// @Param client_secret formData string false "Client secret (required if not using Authorization header)"
 // @Param code formData string false "Authorization code (authorization_code grant)"
 // @Param redirect_uri formData string false "Redirect URI (authorization_code grant)"
 // @Param scope formData string false "Space-delimited scopes"
@@ -244,10 +247,39 @@ func (h *Handler) Authorize(c *gin.Context) {
 // @Router /oauth/token [post]
 // @Router /oauth/token [get]
 func (h *Handler) Token(c *gin.Context) {
+	// Per RFC 6749 §2.3.1: client credentials via Authorization header take precedence
+	headerClientID, headerClientSecret := parseBasicAuth(c.GetHeader("Authorization"))
+
+	bodyClientID := c.PostForm("client_id")
+	bodyClientSecret := c.PostForm("client_secret")
+
+	var clientID, clientSecret string
+	if headerClientID != "" {
+		clientID = headerClientID
+		clientSecret = headerClientSecret
+		if bodyClientID != "" && bodyClientID != headerClientID {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, model.ErrorResponse{
+				Error:            "invalid_client",
+				ErrorDescription: "conflicting client_id in Authorization header and request body",
+			})
+			return
+		}
+	} else {
+		clientID = bodyClientID
+		clientSecret = bodyClientSecret
+	}
+
+	if clientID == "" {
+		clientID = c.Query("client_id")
+	}
+	if clientSecret == "" {
+		clientSecret = c.Query("client_secret")
+	}
+
 	req := &server.TokenRequest{
 		GrantType:    c.PostForm("grant_type"),
-		ClientID:     c.PostForm("client_id"),
-		ClientSecret: c.PostForm("client_secret"),
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 		Code:         c.PostForm("code"),
 		RedirectURI:  c.PostForm("redirect_uri"),
 		Scope:        c.PostForm("scope"),
@@ -259,12 +291,6 @@ func (h *Handler) Token(c *gin.Context) {
 
 	if req.GrantType == "" {
 		req.GrantType = c.Query("grant_type")
-	}
-	if req.ClientID == "" {
-		req.ClientID = c.Query("client_id")
-	}
-	if req.ClientSecret == "" {
-		req.ClientSecret = c.Query("client_secret")
 	}
 	if req.Code == "" {
 		req.Code = c.Query("code")
@@ -433,6 +459,44 @@ func (h *Handler) SetupPasswordAuth() {
 		}
 		return userID, nil
 	})
+}
+
+// parseBasicAuth extracts client_id and client_secret from the Authorization header
+// per RFC 6749 §2.3.1. The header format is:
+//
+//	Authorization: Basic base64(client_id:client_secret)
+//
+// Returns empty strings if the header is absent or malformed.
+func parseBasicAuth(authHeader string) (clientID, clientSecret string) {
+	if authHeader == "" {
+		return "", ""
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Basic") {
+		return "", ""
+	}
+
+	payload, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		// Try URL-safe base64 as some clients use it
+		payload, err = base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			// Try standard base64 with padding
+			payload, err = base64.StdEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+			if err != nil {
+				return "", ""
+			}
+		}
+	}
+
+	decoded := string(payload)
+	idx := strings.IndexByte(decoded, ':')
+	if idx < 0 {
+		return "", ""
+	}
+
+	return decoded[:idx], decoded[idx+1:]
 }
 
 func (h *Handler) readSessionData(sess session.Store) *service.SessionData {
