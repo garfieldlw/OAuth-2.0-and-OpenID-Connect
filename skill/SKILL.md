@@ -25,7 +25,9 @@
   - [第 10 步：登出](#第-10-步登出)
 - [错误处理](#错误处理)
 - [安全注意事项](#安全注意事项)
+- [附录：其他 Grant Type 参考](#附录其他-grant-type-参考)
 - [完整 cURL 示例](#完整-curl-示例)
+- [附录：Discovery 文档](#附录discovery-文档)
 
 ---
 
@@ -37,7 +39,7 @@
 |------|------|------|
 | `client_id` | 分配给第三方应用的客户端标识 | `000000` |
 | `client_secret` | 客户端密钥（用于 Token Endpoint 认证） | `999999` |
-| `redirect_uri` | 已注册的回调地址（必须精确匹配） | `http://localhost:9094/callback` |
+| `redirect_uri` | 已注册的回调地址（必须精确匹配） | `http://localhost:9094` |
 
 > 也可通过 OIDC Discovery 自动获取端点地址：`GET /.well-known/openid-configuration`
 
@@ -48,7 +50,7 @@
 | 端点 | URL | 方法 | 说明 |
 |------|-----|------|------|
 | Authorization | `/oauth/authorize` | GET / POST | 授权端点，颁发 Authorization Code |
-| Token | `/oauth/token` | POST | Token 端点，换取 Token（仅 POST） |
+| Token | `/oauth/token` | POST | Token 端点，换取 Token |
 | UserInfo | `/userinfo` | GET / POST | OIDC UserInfo 端点，获取用户 Claims |
 | Revocation | `/oauth/revoke` | POST | Token 撤销端点 (RFC 7009) |
 | Discovery | `/.well-known/openid-configuration` | GET | OIDC Provider 配置发现 |
@@ -105,6 +107,8 @@
 }
 ```
 
+> `email_verified` 的值取决于用户是否有邮箱：当用户邮箱非空时为 `true`，邮箱为空时为 `false`。上述示例中 demo 用户（admin）已配置邮箱，因此为 `true`。
+>
 > ID Token 中的 Claims 同样遵循此 Scope 过滤规则。
 
 ---
@@ -238,6 +242,8 @@ func main() {
 
 > **安全提示**：`code_verifier` 必须在客户端本地保存，**绝不能**发送到 Authorization URL 中。只有 `code_challenge` 出现在授权请求里。
 
+> **实现细节**：服务端 PKCE 验证逻辑（`VerifyPKCE`）在 `code_challenge` 为空时会直接通过验证。但本系统的授权端点已强制要求 `code_challenge` 参数，因此在正常流程中 `code_challenge` 不会为空，`code_verifier` 在 Token 交换时也是必须提供的。
+
 ---
 
 ### 第 2 步：构造 Authorization URL 并重定向用户
@@ -247,7 +253,7 @@ func main() {
 ```
 GET /oauth/authorize?response_type=code
                     &client_id=000000
-                    &redirect_uri=http://localhost:9094/callback
+                    &redirect_uri=http://localhost:9094
                     &scope=openid+profile+email
                     &state=xyz123
                     &nonce=n-0S6_WzA2Mj
@@ -305,6 +311,8 @@ echo "请在浏览器中打开: $AUTH_URL"
 2. **授权**：查看请求的权限范围，选择同意或拒绝
 
 > 此步骤在浏览器中完成，第三方应用无需处理。服务器通过 session 维持用户状态。
+>
+> **用户拒绝授权时的行为**：服务器不会直接重定向到 `redirect_uri`，而是将 `error=access_denied` 和 `error_description` 附加到原始 Authorization URL 的查询参数上，返回给前端。前端需要检测 URL 中的 `error` 参数并自行处理（例如展示错误页面或重定向到 `redirect_uri` 传递错误）。
 
 ---
 
@@ -314,12 +322,12 @@ echo "请在浏览器中打开: $AUTH_URL"
 
 ```
 HTTP/1.1 302 Found
-Location: http://localhost:9094/callback?code=AUTH_CODE_HERE&state=xyz123
+Location: http://localhost:9094?code=AUTH_CODE_HERE&state=xyz123
 ```
 
 | 参数 | 说明 |
 |------|------|
-| `code` | Authorization Code（24 字节随机字符串，base64url 编码，1 分钟有效，单次使用） |
+| `code` | Authorization Code（24 字节随机数，base64url 编码为 32 字符，1 分钟有效，单次使用） |
 | `state` | 第 2 步中传入的 `state` 原值 |
 
 #### 第三方应用处理
@@ -358,7 +366,7 @@ curl -X POST http://localhost:9096/oauth/token \
   -u "000000:999999" \
   -d "grant_type=authorization_code" \
   -d "code=AUTH_CODE_HERE" \
-  -d "redirect_uri=http://localhost:9094/callback" \
+  -d "redirect_uri=http://localhost:9094" \
   -d "code_verifier=ORIGINAL_CODE_VERIFIER"
 ```
 
@@ -369,7 +377,7 @@ curl -X POST http://localhost:9096/oauth/token \
   -H "Authorization: Basic BASE64(000000:999999)" \
   -d "grant_type=authorization_code" \
   -d "code=AUTH_CODE_HERE" \
-  -d "redirect_uri=http://localhost:9094/callback" \
+  -d "redirect_uri=http://localhost:9094" \
   -d "code_verifier=ORIGINAL_CODE_VERIFIER"
 ```
 
@@ -379,7 +387,7 @@ curl -X POST http://localhost:9096/oauth/token \
 curl -X POST http://localhost:9096/oauth/token \
   -d "grant_type=authorization_code" \
   -d "code=AUTH_CODE_HERE" \
-  -d "redirect_uri=http://localhost:9094/callback" \
+  -d "redirect_uri=http://localhost:9094" \
   -d "client_id=000000" \
   -d "client_secret=999999" \
   -d "code_verifier=ORIGINAL_CODE_VERIFIER"
@@ -397,6 +405,8 @@ curl -X POST http://localhost:9096/oauth/token \
 | `code_verifier` | **是** | 第 1 步生成的原始 Code Verifier |
 
 > `Authorization` Header 和 Body 中的 `client_id` 不能同时存在且不一致，否则返回 `invalid_client`。
+
+> **速率限制**：Token 端点限制为每 IP 每 10 次请求/分钟。超出限制将返回 `429 Too Many Requests`。请在代码中实现退避重试机制。
 
 #### 成功响应
 
@@ -430,7 +440,7 @@ Pragma: no-cache
 
 ### 第 6 步：调用 UserInfo 获取用户信息
 
-使用 Access Token 调用 UserInfo Endpoint，获取用户 Claims。返回字段**严格按 scope 过滤**。
+使用 Access Token 调用 UserInfo Endpoint（支持 GET 和 POST），获取用户 Claims。返回字段**严格按 scope 过滤**。
 
 #### 请求
 
@@ -449,6 +459,8 @@ curl http://localhost:9096/userinfo \
   "email_verified": true
 }
 ```
+
+> `email_verified` 的值为 `user.Email != ""`，即仅当用户邮箱非空时为 `true`。对于未配置邮箱的用户，该值为 `false`。
 
 #### 响应（scope=openid）
 
@@ -483,12 +495,13 @@ ID Token 是 JWT RS256 签名的，你需要在本地验证其完整性和合法
 
 #### 验证步骤
 
-1. **获取公钥**：从 `/.well-known/jwks.json` 获取 RSA 公钥
-2. **验证签名**：使用 RS256 算法和公钥验证 JWT 签名
-3. **验证 `iss`**：必须为 `http://localhost:9096`
-4. **验证 `aud`**：必须包含你的 `client_id`
-5. **验证 `exp`**：Token 不能过期
-6. **验证 `nonce`**（如果提供了）：必须与第 2 步传入的 `nonce` 一致
+1. **获取公钥**：从 `/.well-known/jwks.json` 获取 RSA 公钥（响应包含 `Cache-Control: public, max-age=3600`，建议缓存 1 小时）
+2. **匹配 `kid`**：ID Token 的 JWT Header 中包含 `kid` 字段，必须与 JWKS 中某个 key 的 `kid` 一致，用该 key 验证签名
+3. **验证签名**：使用 RS256 算法和匹配 `kid` 的公钥验证 JWT 签名
+4. **验证 `iss`**：必须为 `http://localhost:9096`
+5. **验证 `aud`**：必须包含你的 `client_id`
+6. **验证 `exp`**：Token 不能过期
+7. **验证 `nonce`**（如果提供了）：必须与第 2 步传入的 `nonce` 一致
 
 #### Python 验证示例
 
@@ -514,6 +527,99 @@ if provided_nonce and id_token_claims.get('nonce') != provided_nonce:
 
 print(f"用户 ID: {id_token_claims['sub']}")
 print(f"认证时间: {id_token_claims['auth_time']}")
+```
+
+#### Node.js 验证示例
+
+```javascript
+const jwksClient = require('jwks-rsa');
+const jwt = require('jsonwebtoken');
+
+// 创建 JWKS 客户端（自动缓存公钥，缓存时间遵循 Cache-Control: max-age=3600）
+const client = jwksClient({
+  jwksUri: 'http://localhost:9096/.well-known/jwks.json',
+  cache: true,
+  cacheMaxAge: 3600000, // 1 小时，与服务器 Cache-Control 一致
+});
+
+function getKey(header, callback) {
+  client.getSigningKey(header.kid, (err, key) => {
+    if (err) return callback(err);
+    const signingKey = key.getPublicKey();
+    callback(null, signingKey);
+  });
+}
+
+// 验证 ID Token
+jwt.verify(idToken, getKey, {
+  algorithms: ['RS256'],
+  audience: '000000',       // 你的 client_id
+  issuer: 'http://localhost:9096',
+}, (err, decoded) => {
+  if (err) {
+    console.error('ID Token 验证失败:', err.message);
+    return;
+  }
+
+  // 验证 nonce（如果提供了）
+  if (providedNonce && decoded.nonce !== providedNonce) {
+    throw new Error('nonce 不匹配');
+  }
+
+  console.log('用户 ID:', decoded.sub);
+  console.log('认证时间:', decoded.auth_time);
+});
+```
+
+#### Go 验证示例
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+)
+
+func verifyIDToken(idToken string, nonce string) error {
+	// 通过 Discovery 文档自动获取 JWKS 和验证配置
+	provider, err := oidc.NewProvider(context.Background(), "http://localhost:9096")
+	if err != nil {
+		return fmt.Errorf("failed to get provider: %v", err)
+	}
+
+	verifier := provider.Verifier(&oidc.Config{
+		ClientID: "000000", // 你的 client_id
+	})
+
+	token, err := verifier.Verify(context.Background(), idToken)
+	if err != nil {
+		return fmt.Errorf("failed to verify ID token: %v", err)
+	}
+
+	// 验证 nonce（如果提供了）
+	if nonce != "" && token.Nonce != nonce {
+		return fmt.Errorf("nonce 不匹配: got %q, want %q", token.Nonce, nonce)
+	}
+
+	// 提取 Claims
+	var claims struct {
+		Sub         string `json:"sub"`
+		AuthTime    int64  `json:"auth_time"`
+		Name        string `json:"name,omitempty"`
+		Email       string `json:"email,omitempty"`
+		EmailVerified bool `json:"email_verified,omitempty"`
+	}
+	if err := token.Claims(&claims); err != nil {
+		return fmt.Errorf("failed to extract claims: %v", err)
+	}
+
+	fmt.Printf("用户 ID: %s\n", claims.Sub)
+	fmt.Printf("认证时间: %d\n", claims.AuthTime)
+	return nil
+}
 ```
 
 ---
@@ -577,7 +683,7 @@ curl -X POST http://localhost:9096/oauth/revoke \
 
 ### 第 10 步：登出
 
-将用户浏览器重定向到 End Session Endpoint：
+将用户浏览器重定向到 End Session Endpoint。服务器会清除用户的服务端 Session（包括 `LoggedInUserID`、`LoggedInUsername`、`AuthTime` 等登录状态），然后重定向到指定地址。
 
 ```
 GET /logout?post_logout_redirect_uri=http://localhost:9094&client_id=000000
@@ -609,7 +715,7 @@ GET /logout?post_logout_redirect_uri=http://localhost:9094&client_id=000000
 
 ```
 HTTP/1.1 302 Found
-Location: http://localhost:9094/callback?error=invalid_scope&error_description=...&state=xyz123
+Location: http://localhost:9094?error=invalid_scope&error_description=...&state=xyz123
 ```
 
 ### Token Endpoint 错误
@@ -637,7 +743,8 @@ Pragma: no-cache
 | `unsupported_grant_type` | 400 | 不支持的 grant_type |
 | `unsupported_response_type` | 400 | response_type 不是 `code` |
 | `unauthorized_client` | 400 | 客户端未被允许使用该 grant_type |
-| `access_denied` | 302 redirect | 用户拒绝授权 |
+| `access_denied` | 302 redirect | 用户拒绝授权（错误参数附加到原始 Authorization URL 返回给前端，由前端处理） |
+| _(速率限制)_ | 429 | Token 端点超出 10 次/分钟/IP 限制 |
 
 ---
 
@@ -653,6 +760,21 @@ Pragma: no-cache
 8. **Token 缓存禁止** — Token 响应包含 `Cache-Control: no-store`，不可缓存。
 9. **redirect_uri 精确匹配** — 必须与注册的 URI 完全一致，不允许模糊匹配或通配符。
 10. **scope 最小权限原则** — 只请求必要的 scope。返回数据严格按 scope 过滤，多余的 scope 不会返回额外数据。
+11. **Token 端点速率限制** — 每 IP 每 10 次请求/分钟，超出返回 `429 Too Many Requests`，客户端应实现指数退避重试。
+
+---
+
+## 附录：其他 Grant Type 参考
+
+本系统除 Authorization Code Flow with PKCE 外，还支持以下 Grant Type（仅供已有可信关系的后端服务使用，**第三方接入应仅使用 Authorization Code Flow with PKCE**）：
+
+| grant_type | 适用场景 | ID Token | Refresh Token |
+|------------|----------|----------|---------------|
+| `password` | 受信任的第一方应用直接使用用户名密码 | 有（scope 含 openid） | 有 |
+| `client_credentials` | 服务间通信（无用户上下文） | 无 | 无 |
+| `refresh_token` | 刷新过期的 Access Token | 有（scope 含 openid） | 有（轮换） |
+
+> **安全提示**：`password` 和 `client_credentials` grant 不涉及浏览器重定向，不适合第三方应用。第三方应用务必使用 Authorization Code Flow with PKCE。
 
 ---
 
@@ -667,7 +789,7 @@ set -e
 SERVER="http://localhost:9096"
 CLIENT_ID="000000"
 CLIENT_SECRET="999999"
-REDIRECT_URI="http://localhost:9094/callback"
+REDIRECT_URI="http://localhost:9094"
 
 # ─── 第 1 步：生成 PKCE ───
 CODE_VERIFIER=$(openssl rand -base64 32 | tr -d '/+=' | head -c 43)
