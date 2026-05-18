@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 type TokenRequest struct {
@@ -47,6 +48,11 @@ func (s *Server) grantAuthorizationCode(req *TokenRequest) (*TokenResponse, erro
 		return nil, fmt.Errorf("invalid_client: authentication failed")
 	}
 
+	client, _ := s.Clients.GetByID(req.ClientID)
+	if !client.IsGrantTypeAllowed("authorization_code") {
+		return nil, fmt.Errorf("unauthorized_client: authorization_code grant is not allowed for this client")
+	}
+
 	authCode, ok := s.AuthCodes.Get(req.Code)
 	if !ok {
 		return nil, fmt.Errorf("invalid_grant: authorization code not found or expired")
@@ -66,7 +72,6 @@ func (s *Server) grantAuthorizationCode(req *TokenRequest) (*TokenResponse, erro
 		return nil, fmt.Errorf("invalid_grant: PKCE verification failed")
 	}
 
-	client, _ := s.Clients.GetByID(req.ClientID)
 	if _, err := ValidateClientScope(client, authCode.Scope); err != nil {
 		return nil, fmt.Errorf("invalid_scope: authorization code scope no longer permitted for this client")
 	}
@@ -108,7 +113,7 @@ func (s *Server) grantAuthorizationCode(req *TokenRequest) (*TokenResponse, erro
 
 	if ShouldIncludeIDToken(authCode.Scope, authCode.UserID, s.UserStore) {
 		user, _ := s.UserStore.GetByID(authCode.UserID)
-		idToken, err := s.Generator.GenerateIDToken(authCode.ClientID, authCode.UserID, authCode.Nonce, user)
+		idToken, err := s.Generator.GenerateIDToken(authCode.ClientID, authCode.UserID, authCode.Nonce, authCode.AuthTime, user, authCode.Scope)
 		if err == nil {
 			resp.IDToken = idToken
 		}
@@ -127,18 +132,21 @@ func (s *Server) grantPassword(req *TokenRequest) (*TokenResponse, error) {
 	}
 
 	client, _ := s.Clients.GetByID(req.ClientID)
+	if !client.IsGrantTypeAllowed("password") {
+		return nil, fmt.Errorf("unauthorized_client: password grant is not allowed for this client")
+	}
+
 	scope, err := ValidateClientScope(client, req.Scope)
 	if err != nil {
 		return nil, err
-	}
-	if scope == "" {
-		scope = "openid"
 	}
 
 	userID, err := s.PasswordAuthFunc(context.Background(), req.ClientID, req.Username, req.Password)
 	if err != nil {
 		return nil, fmt.Errorf("invalid_grant: %v", err)
 	}
+
+	authTime := time.Now().Unix()
 
 	accessToken, expiresAt, err := s.Generator.GenerateAccessToken(req.ClientID, userID, scope)
 	if err != nil {
@@ -177,7 +185,7 @@ func (s *Server) grantPassword(req *TokenRequest) (*TokenResponse, error) {
 
 	if ShouldIncludeIDToken(scope, userID, s.UserStore) {
 		user, _ := s.UserStore.GetByID(userID)
-		idToken, err := s.Generator.GenerateIDToken(req.ClientID, userID, "", user)
+		idToken, err := s.Generator.GenerateIDToken(req.ClientID, userID, "", authTime, user, scope)
 		if err == nil {
 			resp.IDToken = idToken
 		}
@@ -192,6 +200,10 @@ func (s *Server) grantClientCredentials(req *TokenRequest) (*TokenResponse, erro
 	}
 
 	client, _ := s.Clients.GetByID(req.ClientID)
+	if !client.IsGrantTypeAllowed("client_credentials") {
+		return nil, fmt.Errorf("unauthorized_client: client_credentials grant is not allowed for this client")
+	}
+
 	scope, err := ValidateClientScope(client, req.Scope)
 	if err != nil {
 		return nil, err
@@ -227,6 +239,11 @@ func (s *Server) grantRefreshToken(req *TokenRequest) (*TokenResponse, error) {
 		return nil, fmt.Errorf("invalid_client: authentication failed")
 	}
 
+	client, _ := s.Clients.GetByID(req.ClientID)
+	if !client.IsGrantTypeAllowed("refresh_token") {
+		return nil, fmt.Errorf("unauthorized_client: refresh_token grant is not allowed for this client")
+	}
+
 	oldInfo, ok := s.Tokens.GetRefreshToken(req.RefreshToken)
 	if !ok {
 		return nil, fmt.Errorf("invalid_grant: refresh token not found")
@@ -236,7 +253,6 @@ func (s *Server) grantRefreshToken(req *TokenRequest) (*TokenResponse, error) {
 		return nil, fmt.Errorf("invalid_grant: refresh token was not issued to this client")
 	}
 
-	client, _ := s.Clients.GetByID(req.ClientID)
 	scope := req.Scope
 	if scope == "" {
 		scope = oldInfo.Scope
@@ -290,7 +306,7 @@ func (s *Server) grantRefreshToken(req *TokenRequest) (*TokenResponse, error) {
 
 	if ShouldIncludeIDToken(scope, oldInfo.UserID, s.UserStore) {
 		user, _ := s.UserStore.GetByID(oldInfo.UserID)
-		idToken, err := s.Generator.GenerateIDToken(oldInfo.ClientID, oldInfo.UserID, "", user)
+		idToken, err := s.Generator.GenerateIDToken(oldInfo.ClientID, oldInfo.UserID, "", time.Now().Unix(), user, scope)
 		if err == nil {
 			resp.IDToken = idToken
 		}

@@ -53,7 +53,7 @@ func (g *TokenGenerator) GenerateAccessToken(clientID, userID, scope string) (st
 	return signed, expiresAt, nil
 }
 
-func (g *TokenGenerator) GenerateIDToken(clientID, userID, nonce string, user *model.User) (string, error) {
+func (g *TokenGenerator) GenerateIDToken(clientID, userID, nonce string, authTime int64, user *model.User, scope string) (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iss":       g.Issuer,
@@ -61,7 +61,7 @@ func (g *TokenGenerator) GenerateIDToken(clientID, userID, nonce string, user *m
 		"aud":       clientID,
 		"exp":       now.Add(g.IDTokenExpiry).Unix(),
 		"iat":       now.Unix(),
-		"auth_time": now.Unix(),
+		"auth_time": authTime,
 	}
 	if nonce != "" {
 		claims["nonce"] = nonce
@@ -69,6 +69,7 @@ func (g *TokenGenerator) GenerateIDToken(clientID, userID, nonce string, user *m
 	if user != nil {
 		if user.Email != "" {
 			claims["email"] = user.Email
+			claims["email_verified"] = user.Email != ""
 		}
 		if user.Name != "" {
 			claims["name"] = user.Name
