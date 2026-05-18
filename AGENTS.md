@@ -189,6 +189,262 @@ All in-memory via `sync.Map`. Interface-compatible for future DB backends:
 - **RSA key**: 2048-bit, generated at startup (or loaded from `OAUTH_RSA_KEY_PATH`)
 - **kid**: RFC 7638 JWK thumbprint (SHA-256)
 
+## Development Commands
+
+```bash
+# Run the server (starts at http://localhost:9096)
+go run cmd/server/main.go
+
+# Build binary
+go build -o bin/server cmd/server/main.go
+
+# Run tests (currently no tests exist — see Known Limitations)
+go test ./... -v
+
+# Run tests for a specific package
+go test ./internal/server/... -v
+go test ./internal/service/... -v
+
+# Tidy dependencies
+go mod tidy
+
+# Regenerate Swagger docs (MUST run after changing any swag annotations in godoc comments)
+/Users/wei/go/bin/swag init -g cmd/server/main.go -o ./docs --parseDependency --parseInternal
+
+# Format code (ALWAYS run before committing)
+gofmt -w .
+
+# Vet code (static analysis for common mistakes)
+go vet ./...
+
+# Run linter (if golangci-lint is installed)
+golangci-lint run ./...
+
+# Generate RSA key for production use
+openssl genrsa -out private.pem 2048
+
+# Run with custom RSA key
+OAUTH_RSA_KEY_PATH=./private.pem go run cmd/server/main.go
+
+# Run with production cookie settings
+OAUTH_SECURE_COOKIE=true OAUTH_SESSION_SECRET=your-secret go run cmd/server/main.go
+
+# Frontend (optional React UI)
+cd web && npm install && npm run dev    # Dev server at http://localhost:5173
+cd web && npm run build                  # Production build to web/dist/
+```
+
+### Build Verification Checklist
+
+After making code changes, ALWAYS verify:
+
+1. `go build ./...` — compiles without errors
+2. `go vet ./...` — no vet warnings
+3. `gofmt -l .` — no unformatted files (output should be empty)
+4. If Swagger annotations were modified: re-run `swag init` and check `docs/` regenerated
+5. `go test ./...` — all tests pass (when tests exist)
+
+## Coding Conventions
+
+### Project Structure
+
+```
+cmd/server/main.go       → Entrypoint only: wiring, config, startup
+internal/
+  handler/               → HTTP layer: Gin handlers, request parsing, response serialization
+  service/               → Business logic: protocol-agnostic, no Gin dependency
+  server/                → OAuth2/OIDC core: token generation, grant dispatch, stores, PKCE
+  model/                 → Data models and request/response structs
+  middleware/             → Gin middleware: CORS, session, rate limiting
+  router/                → Route definitions and middleware wiring
+  oidc/                  → OIDC-specific: JWKS builder, discovery builder, key ID computation
+```
+
+**Layer dependency direction**: `handler` → `service` → `server` → `model`. Never reverse. `service` must NOT import `handler` or `gin`. `server` must NOT import `handler` or `service`.
+
+### Import Grouping
+
+Group imports in 3 sections, separated by blank lines:
+
+```go
+import (
+    // 1. Standard library
+    "context"
+    "fmt"
+    "time"
+
+    // 2. Third-party packages
+    "github.com/gin-gonic/gin"
+    "github.com/golang-jwt/jwt/v5"
+
+    // 3. Internal packages
+    "github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/model"
+    "github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/server"
+)
+```
+
+### Naming Conventions
+
+- **Exported functions/types**: PascalCase — `NewServer()`, `TokenGenerator`, `ValidateAccessToken()`
+- **Unexported functions/types**: camelCase — `grantAuthorizationCode()`, `generateRandomString()`, `validateRedirectURI()`
+- **Constructor pattern**: `NewXxx()` — `NewServer()`, `NewTokenGenerator()`, `NewAuthService()`
+- **Method receivers**: Pointer receivers for structs with mutable state (`func (s *Server)`). Short, meaningful names — `s` for Server, `g` for TokenGenerator, `h` for Handler, `b` for builders.
+- **Interfaces**: Not used extensively — concrete structs preferred. Define interfaces only when multiple implementations are expected (e.g., future DB-backed stores).
+- **Constants**: No `const` blocks used; configuration via `AppConfig` struct or `TokenGenerator` fields (e.g., `AccessExpiry: 2 * time.Hour`).
+
+### Error Handling
+
+**Error format convention** (server layer): `fmt.Errorf("oauth_error_code: human-readable description")`
+
+The error code before the colon is the OAuth 2.0 standard error code, extracted by `service.ExtractOAuthError()`:
+
+```go
+// Server layer — use fmt.Errorf with OAuth error code prefix
+return nil, fmt.Errorf("invalid_client: authentication failed")
+return nil, fmt.Errorf("invalid_grant: authorization code not found or expired")
+return nil, fmt.Errorf("invalid_scope: scope %q is not allowed for client %q", s, client.ID)
+return nil, fmt.Errorf("unsupported_grant_type: %s", req.GrantType)
+return nil, fmt.Errorf("unauthorized_client: password grant is not allowed for this client")
+
+// Custom error types for structured errors
+type AuthorizeError struct {    // internal/server/authorize.go
+    Code        string
+    Description string
+    RedirectURI string
+    State       string
+}
+
+type TokenError struct {         // internal/service/token_service.go
+    Code        string
+    Description string
+    HTTPStatus  int
+}
+```
+
+**OAuth 2.0 error codes used** (must match RFC 6749 §5.2 and extensions):
+
+| Error Code | HTTP Status | When |
+|---|---|---|
+| `invalid_request` | 400 | Missing required parameter, malformed request |
+| `invalid_client` | 401 | Client authentication failed (set `WWW-Authenticate` header) |
+| `invalid_grant` | 400 | Authorization code / refresh token invalid, expired, or mismatch |
+| `invalid_scope` | 400 | Requested scope not allowed for client |
+| `unsupported_grant_type` | 400 | Unknown or disallowed grant_type |
+| `unsupported_response_type` | 400 | response_type other than `code` |
+| `unauthorized_client` | 400 | Client not allowed to use this grant type |
+| `invalid_token` | 401 | Bearer token validation failed |
+| `user_not_found` | 404 | UserInfo endpoint: user ID not in UserStore |
+| `slow_down` | 429 | Rate limit exceeded |
+
+**Handler layer error response pattern**:
+
+```go
+// Standard OAuth error response — use model.ErrorResponse
+c.AbortWithStatusJSON(http.StatusBadRequest, model.ErrorResponse{
+    Error: "invalid_grant", ErrorDescription: "authorization code not found or expired",
+})
+
+// For invalid_client errors — ALWAYS set WWW-Authenticate header
+c.Header("WWW-Authenticate", `Basic realm="OAuth2"`)
+c.AbortWithStatusJSON(http.StatusUnauthorized, model.ErrorResponse{
+    Error: "invalid_client", ErrorDescription: "client authentication failed",
+})
+
+// Token endpoint — ALWAYS set Cache-Control headers
+c.Header("Cache-Control", "no-store")
+c.Header("Pragma", "no-cache")
+```
+
+### Handler Layer Conventions
+
+- **Request binding**: `c.ShouldBindJSON(&req)` for JSON bodies, `c.PostForm("field")` for form-encoded, `c.Query("field")` for query params
+- **Response format**: `c.JSON(status, data)` for JSON, `c.Redirect(http.StatusFound, url)` for redirects
+- **Error flow**: Use `c.AbortWithStatusJSON()` (stops handler chain) or `c.AbortWithError()` (for internal errors). Never use `c.JSON()` alone for error responses in middleware chains.
+- **Never panic in handlers** — return errors via the patterns above
+- **Session access**: Always call `session.Start()` first, use type assertions with `ok` check for session values
+
+### Service Layer Conventions
+
+- **No Gin dependency** — services must NOT import `github.com/gin-gonic/gin`. HTTP context is bridged from handlers via plain Go types.
+- **Input**: Receive typed structs (e.g., `*SessionData`, `*server.TokenRequest`)
+- **Output**: Return typed structs + `error`. For OAuth protocol errors, return `*TokenError` or `*AuthorizeError` with proper HTTP status codes.
+- **Stateless**: Services do not manage sessions or cookies. Handler passes session data in.
+
+### Server Layer Conventions
+
+- **Pure protocol logic**: OAuth2/OIDC spec implementation only. No HTTP awareness.
+- **Error format**: `fmt.Errorf("oauth_error_code: description")` — handler/service maps to HTTP status
+- **Return pattern**: `(*Result, error)` — nil result on error, non-nil on success
+- **Stores**: In-memory via `sync.Map`. All store methods are goroutine-safe. Store constructors follow `NewXxxStore()` pattern.
+- **Token generation**: All via `TokenGenerator` — RSA-2048 RS256 for JWTs, `crypto/rand` for opaque tokens. Never use `math/rand`.
+
+### Security-Critical Coding Rules
+
+- **Client secret comparison**: ALWAYS use `subtle.ConstantTimeCompare()` — never `==`
+- **Random generation**: ALWAYS use `crypto/rand` — never `math/rand`
+- **Secrets in logs**: NEVER log client secrets, tokens, authorization codes, or passwords
+- **Password storage**: Current demo uses plaintext — future production MUST use bcrypt
+- **Error messages**: Do not leak internal state in error descriptions (e.g., "invalid credentials" not "password mismatch for user admin")
+- **PKCE verification**: S256 only. Never accept `plain` method.
+
+### Swagger Annotations
+
+Use swag DSL in godoc comments above handler functions. Format:
+
+```go
+// HandlerName godoc
+// @Summary Short description
+// @Description Longer description with details
+// @Tags TagName
+// @Accept json
+// @Produce json
+// @Param name location type required "Description"
+// @Success 200 {object} model.ResponseType
+// @Failure 400 {object} model.ErrorResponse
+// @Router /path [method]
+func (h *Handler) HandlerName(c *gin.Context) { ... }
+```
+
+After modifying any Swagger annotation, regenerate docs:
+
+```bash
+/Users/wei/go/bin/swag init -g cmd/server/main.go -o ./docs --parseDependency --parseInternal
+```
+
+### Model Struct Tags
+
+- **JSON API models**: Always include `json` tags — use `omitempty` for optional fields
+- **Swagger models**: Include `example` tags for Swagger UI display
+- **Sensitive fields**: Use `json:"-"` to exclude (e.g., `User.Password`)
+
+```go
+type User struct {
+    ID       string `json:"id"`
+    Username string `json:"username"`
+    Password string `json:"-"`                    // Never serialize
+    Email    string `json:"email,omitempty"`      // Optional
+    Name     string `json:"name,omitempty"`       // Optional
+}
+```
+
+### Adding a New Endpoint
+
+1. Define request/response structs in `internal/model/model.go`
+2. Add business logic in the appropriate `service/` or `server/` file
+3. Add handler method in `internal/handler/handler.go` with Swagger annotations
+4. Register route in `internal/router/router.go`
+5. Regenerate Swagger docs: `swag init -g cmd/server/main.go -o ./docs --parseDependency --parseInternal`
+6. Verify: `go build ./...`, `go vet ./...`, `gofmt -l .`
+
+### Adding a New Grant Type
+
+1. Add grant type constant to `Client.AllowedGrantTypes` validation
+2. Add handler in `internal/server/grant.go` — `func (s *Server) grantXxx(req *TokenRequest) (*TokenResponse, error)`
+3. Add dispatch case in `Server.Token()` switch
+4. Register clients with the new grant type in `cmd/server/main.go`
+5. Update OIDC Discovery `GrantTypesSupported` in `internal/oidc/oidc.go`
+6. Add Swagger annotations for new parameters
+
 ## Known Limitations / Future Work
 
 - **In-memory stores only**: All state lost on restart. Add DB-backed stores (Redis, PostgreSQL, GORM) for production.
