@@ -96,8 +96,8 @@ func main() {
 	userStore := model.NewUserStore()
 	srv := server.NewServer(config, userStore)
 
-	srv.RegisterClient("000000", "999999", []string{"http://localhost:9094"}, []string{"openid", "profile", "email"})
-	srv.RegisterClient("111111", "11111111", []string{"http://localhost:9094"}, []string{"openid", "profile", "email"})
+	srv.RegisterClient("000000", "999999", []string{"http://localhost:9094"}, []string{"openid", "profile", "email"}, []string{"authorization_code", "password", "client_credentials", "refresh_token"})
+	srv.RegisterClient("111111", "11111111", []string{"http://localhost:9094"}, []string{"openid", "profile", "email"}, []string{"authorization_code", "password", "client_credentials", "refresh_token"})
 
 	discovery := oidc.NewDiscoveryBuilder(config)
 	jwksBuilder := oidc.NewJWKSBuilder(config.RSAPublicKey, config.KeyID)

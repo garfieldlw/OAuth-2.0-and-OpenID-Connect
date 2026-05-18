@@ -56,6 +56,8 @@ definitions:
     properties:
       authorization_endpoint:
         type: string
+      claims_parameter_supported:
+        type: boolean
       claims_supported:
         items:
           type: string
@@ -64,6 +66,8 @@ definitions:
         items:
           type: string
         type: array
+      end_session_endpoint:
+        type: string
       grant_types_supported:
         items:
           type: string
@@ -76,12 +80,16 @@ definitions:
         type: string
       jwks_uri:
         type: string
-      registration_endpoint:
-        type: string
+      response_modes_supported:
+        items:
+          type: string
+        type: array
       response_types_supported:
         items:
           type: string
         type: array
+      revocation_endpoint:
+        type: string
       scopes_supported:
         items:
           type: string
@@ -352,10 +360,17 @@ paths:
   /logout:
     get:
       description: Ends the user session and redirects to the login page or the post_logout_redirect_uri.
+        Per OIDC Session Management 1.0, post_logout_redirect_uri must match a client's
+        registered redirect URI.
       parameters:
-      - description: URI to redirect after logout
+      - description: URI to redirect after logout (must match a client's registered
+          redirect URI)
         in: query
         name: post_logout_redirect_uri
+        type: string
+      - description: Client identifier (recommended when using post_logout_redirect_uri)
+        in: query
+        name: client_id
         type: string
       produces:
       - application/json
@@ -498,6 +513,50 @@ paths:
           schema:
             $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
       summary: OAuth 2.0 / OIDC Authorization Endpoint
+      tags:
+      - OAuth2
+  /oauth/revoke:
+    post:
+      consumes:
+      - application/x-www-form-urlencoded
+      description: Revokes an access token or refresh token per RFC 7009. The token_type_hint
+        parameter is optional but recommended. If the token is not found, the endpoint
+        still returns 200 per RFC 7009 §2.2.
+      parameters:
+      - description: 'Client credentials via HTTP Basic: Basic base64(client_id:client_secret)'
+        in: header
+        name: Authorization
+        type: string
+      - description: Client identifier (required if not using Authorization header)
+        in: formData
+        name: client_id
+        type: string
+      - description: Client secret (required if not using Authorization header)
+        in: formData
+        name: client_secret
+        type: string
+      - description: The token to revoke
+        in: formData
+        name: token
+        required: true
+        type: string
+      - description: 'Hint about the type of token: access_token or refresh_token'
+        enum:
+        - access_token
+        - refresh_token
+        in: formData
+        name: token_type_hint
+        type: string
+      responses:
+        "200":
+          description: Token revoked or not found (both return 200 per RFC 7009)
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse'
+      summary: OAuth 2.0 Token Revocation Endpoint
       tags:
       - OAuth2
   /oauth/token:

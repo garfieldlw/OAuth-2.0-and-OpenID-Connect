@@ -299,7 +299,7 @@
         },
         "/logout": {
             "get": {
-                "description": "Ends the user session and redirects to the login page or the post_logout_redirect_uri.",
+                "description": "Ends the user session and redirects to the login page or the post_logout_redirect_uri. Per OIDC Session Management 1.0, post_logout_redirect_uri must match a client's registered redirect URI.",
                 "produces": [
                     "application/json"
                 ],
@@ -310,8 +310,14 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "URI to redirect after logout",
+                        "description": "URI to redirect after logout (must match a client's registered redirect URI)",
                         "name": "post_logout_redirect_uri",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Client identifier (recommended when using post_logout_redirect_uri)",
+                        "name": "client_id",
                         "in": "query"
                     }
                 ],
@@ -502,6 +508,69 @@
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_garfieldlw_OAuth-2_0-and-OpenID-Connect_internal_model.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/oauth/revoke": {
+            "post": {
+                "description": "Revokes an access token or refresh token per RFC 7009. The token_type_hint parameter is optional but recommended. If the token is not found, the endpoint still returns 200 per RFC 7009 §2.2.",
+                "consumes": [
+                    "application/x-www-form-urlencoded"
+                ],
+                "tags": [
+                    "OAuth2"
+                ],
+                "summary": "OAuth 2.0 Token Revocation Endpoint",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client credentials via HTTP Basic: Basic base64(client_id:client_secret)",
+                        "name": "Authorization",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Client identifier (required if not using Authorization header)",
+                        "name": "client_id",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Client secret (required if not using Authorization header)",
+                        "name": "client_secret",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "The token to revoke",
+                        "name": "token",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "access_token",
+                            "refresh_token"
+                        ],
+                        "type": "string",
+                        "description": "Hint about the type of token: access_token or refresh_token",
+                        "name": "token_type_hint",
+                        "in": "formData"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Token revoked or not found (both return 200 per RFC 7009)",
+                        "schema": {
+                            "type": "string"
                         }
                     },
                     "401": {
@@ -919,6 +988,9 @@
                 "authorization_endpoint": {
                     "type": "string"
                 },
+                "claims_parameter_supported": {
+                    "type": "boolean"
+                },
                 "claims_supported": {
                     "type": "array",
                     "items": {
@@ -930,6 +1002,9 @@
                     "items": {
                         "type": "string"
                     }
+                },
+                "end_session_endpoint": {
+                    "type": "string"
                 },
                 "grant_types_supported": {
                     "type": "array",
@@ -949,14 +1024,20 @@
                 "jwks_uri": {
                     "type": "string"
                 },
-                "registration_endpoint": {
-                    "type": "string"
+                "response_modes_supported": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "response_types_supported": {
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
+                },
+                "revocation_endpoint": {
+                    "type": "string"
                 },
                 "scopes_supported": {
                     "type": "array",
