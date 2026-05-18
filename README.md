@@ -13,7 +13,7 @@ A native Go implementation of an **OAuth 2.1** Authorization Server and **OpenID
 - **4 Grant Types** — `authorization_code`, `password`, `client_credentials`, `refresh_token`
 - **OpenID Connect 1.0** — ID tokens as a first-class citizen, generated inline when `scope=openid`
 - **JWT RS256** — Access tokens and ID tokens signed with RSA-2048 (RS256)
-- **PKCE** — S256 and plain code challenge methods supported
+- **PKCE** — S256 code challenge method only (plain removed per OAuth 2.1)
 - **Client Authentication** — `client_secret_basic` (Authorization header) and `client_secret_post` (body params) per RFC 6749 §2.3.1
 - **JWKS & Discovery** — Standard OIDC endpoints for key distribution and provider metadata
 - **Refresh Token Rotation** — Old tokens revoked on exchange, new pair issued
@@ -39,7 +39,7 @@ internal/
     grant.go                Token endpoint: dispatches by grant_type
     token.go                TokenGenerator: JWT RS256 access/id/refresh/code generation + validation
     store.go                In-memory stores (ClientStore, AuthCodeStore, TokenStore) via sync.Map
-    pkce.go                 VerifyPKCE(): S256 and plain code verifier validation
+pkce.go VerifyPKCE(): S256-only code verifier validation (plain removed per OAuth 2.1)
   oidc/oidc.go              JWKSBuilder (RFC 7638 thumbprint kid), DiscoveryBuilder
   model/model.go            Data models: User, AppConfig, OIDCDiscovery, IDTokenClaims, request/response structs
 web/                        React + TypeScript + Vite frontend (login/consent pages)
@@ -88,7 +88,7 @@ ID token inclusion is decided by `ShouldIncludeIDToken(scope, userID, userStore)
 | Access Token | JWT RS256 (`iss`, `sub`, `aud`, `exp`, `iat`, `scope`) | RSA-2048 + `kid` header | 2 hours |
 | ID Token | JWT RS256 (`iss`, `sub`, `aud`, `exp`, `iat`, `auth_time`, optional `nonce`/`email`/`name`) | RSA-2048 + `kid` header | 1 hour |
 | Refresh Token | 32-byte random string (base64url) | — | 24 hours |
-| Authorization Code | 24-byte random string (base64url) | — | 10 minutes (single-use) |
+| Authorization Code | 24-byte random string (base64url) | — | 1 minute (single-use) |
 
 - **kid**: RFC 7638 JWK thumbprint (SHA-256), base64url encoded
 - **Refresh token rotation**: old refresh token + old access token deleted on exchange; new pair created
@@ -177,7 +177,7 @@ This is the primary and recommended flow per OAuth 2.1 (RFC 9728). All other gra
 └────┬─────┘                              └──────┬───────┘                    └─────┬────┘
      │                                           │                                  │
      │  ① Generate code_verifier + code_challenge │                                  │
-     │  (PKCE: S256 or plain)                    │                                  │
+│ (PKCE: S256 only) │ │
      │                                           │                                  │
      │  ② GET /oauth/authorize                   │                                  │
      │  ?response_type=code                      │                                  │
@@ -234,9 +234,8 @@ This is the primary and recommended flow per OAuth 2.1 (RFC 9728). All other gra
      │ ─────────────────────────────────────────>│                                  │
      │                                           │                                  │
      │                                           │  ⑭ Verify PKCE:                  │
-     │                                           │    S256: SHA256(verifier) == stored challenge│
-     │                                           │    plain: verifier == stored challenge│
-     │                                           │  Delete auth code (single-use)    │
+│ │ S256: SHA256(verifier) == stored challenge│
+│ │ Delete auth code (single-use) │
      │                                           │  Generate access_token + id_token + refresh_token│
      │                                           │                                  │
      │  ⑮ 200 {access_token, id_token, refresh_token, ...}                          │
@@ -257,13 +256,12 @@ This is the primary and recommended flow per OAuth 2.1 (RFC 9728). All other gra
 Before initiating the flow, the client generates a `code_verifier` and derives a `code_challenge`:
 
 - **code_verifier**: A cryptographically random string, 43–128 characters long, containing only `[A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"` (unreserved URL-safe characters per RFC 7636 §4.1)
-- **code_challenge**: Derived from the verifier using the specified method:
-  - **S256** (recommended): `BASE64URL(SHA256(code_verifier))`
-  - **plain**: `code_verifier` itself (not recommended for production)
+- **code_challenge**: Derived from the verifier using the S256 method:
+  - **S256** (required): `BASE64URL(SHA256(code_verifier))`
 
 The `code_verifier` is kept secret on the client; only the `code_challenge` is sent in the authorization request. This binds the authorization code to the original client, preventing authorization code interception attacks.
 
-> **Implementation**: The server validates PKCE in `internal/server/pkce.go` via `VerifyPKCE(challenge, method, verifier)`. If `challenge` is empty, PKCE verification passes (optional). The server supports both `S256` and `plain` methods.
+> **Implementation**: The server validates PKCE in `internal/server/pkce.go` via `VerifyPKCE(challenge, method, verifier)`. The server only supports `S256` method per OAuth 2.1 (RFC 9728 §7.1). The `plain` method is removed. If `challenge` is empty, PKCE verification passes (for backward compatibility with non-PKCE clients, but `code_challenge` is required at the authorization endpoint).
 
 #### ② Authorization Request
 
@@ -277,15 +275,17 @@ The client redirects the user agent (browser) to the authorization endpoint:
 | `scope` | No | Space-delimited scopes (e.g. `openid profile email`). Defaults to client's allowed scopes if omitted. |
 | `state` | Recommended | Opaque value returned verbatim in the redirect; prevents CSRF |
 | `nonce` | Recommended | String value for ID token replay protection (used when `scope` includes `openid`) |
-| `code_challenge` | Recommended | PKCE code challenge derived from `code_verifier` |
-| `code_challenge_method` | Conditional | `S256` (recommended) or `plain`. Required if `code_challenge` is present. |
+| `code_challenge` | Required | PKCE code challenge derived from `code_verifier` (required per OAuth 2.1) |
+| `code_challenge_method` | Required | Must be `S256` (only supported method per OAuth 2.1 RFC 9728 §7.1) |
 
 > **Server processing** (`internal/server/authorize.go` — `Server.Authorize()`):
 > 1. Validates `client_id` exists in `ClientStore`
 > 2. Validates `redirect_uri` matches a registered URI (exact match)
 > 3. Validates requested `scope` against client's allowed scopes
-> 4. Enforces `response_type=code` only (rejects `token`, `id_token`, etc. with `unsupported_response_type`)
-> 5. If all checks pass, calls `authorizeCode()` which generates a random 24-byte code and stores it
+> 4. Requires `code_challenge` parameter (PKCE mandatory per OAuth 2.1)
+> 5. Requires `code_challenge_method=S256` (only supported method)
+> 6. Enforces `response_type=code` only (rejects `token`, `id_token`, etc. with `unsupported_response_type`)
+> 7. If all checks pass, calls `authorizeCode()` which generates a random 24-byte code and stores it
 
 #### ③ Login Gate (Session Check)
 
@@ -390,7 +390,7 @@ The server validates the request (client, redirect URI, scope, response type) an
 >   - `Code`, `ClientID`, `UserID`, `RedirectURI`, `Scope`
 >   - `Nonce` — preserved for ID token generation
 >   - `CodeChallenge`, `CodeChallengeMethod` — preserved for PKCE verification at token exchange
->   - `ExpiresAt` — 10 minutes from now
+> - `ExpiresAt` — 1 minute from now
 > - The authorization code carries **all context** needed for token exchange — no external state stores required
 
 #### ⑫ Authorization Response (Redirect)
@@ -404,7 +404,7 @@ Location: http://localhost:9094?code=RECEIVED_AUTH_CODE&state=xyz123
 
 | Parameter | Description |
 |---|---|
-| `code` | The authorization code (24-byte base64url string, expires in 10 minutes, single-use) |
+| `code` | The authorization code (24-byte base64url string, expires in 1 minute, single-use) |
 | `state` | The exact `state` value from the authorization request (if provided) |
 
 #### ⑬ Token Exchange
@@ -457,9 +457,8 @@ grant_type=authorization_code
 > 4. **Client binding check**: verifies code was issued to the same `client_id`
 > 5. **Redirect URI check**: verifies `redirect_uri` matches the one stored in the code
 > 6. **PKCE verification** (`internal/server/pkce.go` — `VerifyPKCE()`):
->    - `S256`: `BASE64URL(SHA256(code_verifier)) == stored_code_challenge`
->    - `plain`: `code_verifier == stored_code_challenge`
->    - If `code_challenge` was empty (PKCE not used), verification passes
+> - `S256`: `BASE64URL(SHA256(code_verifier)) == stored_code_challenge`
+> - If `code_challenge` was empty (PKCE not used), verification passes
 > 7. **Scope validation**: re-validates that the code's scope is still permitted for the client
 > 8. **Token generation**:
 >    - **Access token**: JWT RS256 with `iss`, `sub`, `aud`, `exp`, `iat`, `scope` claims (2h expiry)
@@ -614,27 +613,23 @@ The PKCE verification is implemented in `internal/server/pkce.go`:
 VerifyPKCE(challenge, method, verifier) → bool
 
 ┌──────────────────────┐
-│ challenge == "" ?    │──Yes──→ return true (PKCE optional)
+│ challenge == "" ? │──Yes──→ return true (no PKCE challenge stored)
 └──────────┬───────────┘
-           │ No
-           ▼
+          │ No
+          ▼
 ┌──────────────────────┐
-│ method == "S256" ?   │──Yes──→ SHA256(verifier) → BASE64URL → compare with challenge
+│ method == "S256" ? │──Yes──→ SHA256(verifier) → BASE64URL → compare with challenge
 └──────────┬───────────┘
-           │ No
-           ▼
-┌──────────────────────┐
-│ method == "plain" ?  │──Yes──→ verifier == challenge
-└──────────┬───────────┘
-           │ No
-           ▼
-    return false (unsupported method)
+          │ No
+          ▼
+   return false (unsupported method, plain removed per OAuth 2.1)
 ```
 
 **Key security properties:**
 - The `code_verifier` is never sent in the authorization request — only the `code_challenge` is sent
 - An attacker who intercepts the authorization code cannot exchange it without the `code_verifier`
 - With `S256`, the original `code_verifier` cannot be derived from the `code_challenge` (one-way hash)
+- The `plain` method is removed per OAuth 2.1 (RFC 9728 §7.1) — only `S256` is supported
 - The `code_challenge` and `code_challenge_method` are stored in the `AuthorizationCode` struct and verified at token exchange time
 
 ## Other Grant Types
@@ -723,7 +718,7 @@ swag init -g cmd/server/main.go -o ./docs --parseDependency --parseInternal
 ## Security Considerations
 
 - **RSA-2048 RS256** signing with `kid` via RFC 7638 JWK thumbprint
-- **PKCE** support (S256 recommended, plain also supported)
+- **PKCE** — S256 only (plain removed per OAuth 2.1 RFC 9728 §7.1); `code_challenge` required at authorization endpoint
 - **Authorization code single-use** — deleted immediately on exchange
 - **Redirect URI strict matching** — exact match against registered URIs
 - **Refresh token rotation** — old token pair revoked on each exchange
@@ -739,7 +734,6 @@ swag init -g cmd/server/main.go -o ./docs --parseDependency --parseInternal
 - **In-memory stores only** — all state lost on restart. Add DB-backed stores (Redis, PostgreSQL) for production.
 - **No dynamic client registration** — clients are registered in code. Add a registration endpoint for production.
 - **No token introspection endpoint** — add [RFC 7662](https://datatracker.ietf.org/doc/html/rfc7662).
-- **No token revocation endpoint** — add [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009).
 - **No encrypted tokens** — consider `go-jose` for JWE if needed.
 - **No tests** — add unit + integration tests.
 
