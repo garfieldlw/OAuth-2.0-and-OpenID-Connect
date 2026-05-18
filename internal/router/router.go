@@ -46,8 +46,8 @@ func Setup(engine *gin.Engine, h *handler.Handler, cfg *Config) {
 	{
 		oauth.GET("/authorize", h.Authorize)
 		oauth.POST("/authorize", h.Authorize)
-		oauth.GET("/token", middleware.RateLimit(cfg.TokenRateLimit, cfg.TokenRateWindow), h.Token)
 		oauth.POST("/token", middleware.RateLimit(cfg.TokenRateLimit, cfg.TokenRateWindow), h.Token)
+		oauth.POST("/revoke", h.Revoke)
 	}
 
 	engine.GET("/userinfo", h.UserInfo)

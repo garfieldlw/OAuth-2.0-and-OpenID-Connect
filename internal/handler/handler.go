@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-session/session/v3"
@@ -92,6 +93,7 @@ func (h *Handler) Login(c *gin.Context) {
 
 	sess.Set("LoggedInUserID", userID)
 	sess.Set("LoggedInUsername", req.Username)
+	sess.Set("AuthTime", time.Now().Unix())
 	sess.Save()
 
 	sessionData := h.readSessionData(sess)
@@ -201,10 +203,32 @@ func (h *Handler) Authorize(c *gin.Context) {
 		CodeChallenge:       c.Query("code_challenge"),
 		CodeChallengeMethod: c.Query("code_challenge_method"),
 		UserID:              userID,
+		AuthTime:            sessionData.AuthTime,
 	}
 
 	result, err := h.Server.Authorize(req)
 	if err != nil {
+		var authErr *server.AuthorizeError
+		if errors.As(err, &authErr) {
+			if authErr.RedirectURI != "" {
+				redirectURL, parseErr := url.Parse(authErr.RedirectURI)
+				if parseErr == nil {
+					q := redirectURL.Query()
+					q.Set("error", authErr.Code)
+					q.Set("error_description", authErr.Description)
+					if authErr.State != "" {
+						q.Set("state", authErr.State)
+					}
+					redirectURL.RawQuery = q.Encode()
+					c.Redirect(http.StatusFound, redirectURL.String())
+					return
+				}
+			}
+			c.AbortWithStatusJSON(http.StatusBadRequest, model.ErrorResponse{
+				Error: authErr.Code, ErrorDescription: authErr.Description,
+			})
+			return
+		}
 		c.AbortWithError(http.StatusBadRequest, err)
 		return
 	}
@@ -269,13 +293,6 @@ func (h *Handler) Token(c *gin.Context) {
 		clientSecret = bodyClientSecret
 	}
 
-	if clientID == "" {
-		clientID = c.Query("client_id")
-	}
-	if clientSecret == "" {
-		clientSecret = c.Query("client_secret")
-	}
-
 	req := &server.TokenRequest{
 		GrantType:    c.PostForm("grant_type"),
 		ClientID:     clientID,
@@ -316,9 +333,15 @@ func (h *Handler) Token(c *gin.Context) {
 
 	resp, err := h.TokenService.ProcessToken(req)
 	if err != nil {
-		var tokenErr *service.TokenError
-		if errors.As(err, &tokenErr) {
-			c.AbortWithStatusJSON(tokenErr.HTTPStatus, model.ErrorResponse{
+	var tokenErr *service.TokenError
+	if errors.As(err, &tokenErr) {
+		status := tokenErr.HTTPStatus
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
+		if tokenErr.Code == "invalid_client" {
+			c.Header("WWW-Authenticate", `Basic realm="OAuth2"`)
+		}
+		c.AbortWithStatusJSON(status, model.ErrorResponse{
 				Error:             tokenErr.Code,
 				ErrorDescription: tokenErr.Description,
 			})
@@ -331,6 +354,8 @@ func (h *Handler) Token(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -428,10 +453,11 @@ func (h *Handler) TokenTest(c *gin.Context) {
 
 // Logout godoc
 // @Summary End Session
-// @Description Ends the user session and redirects to the login page or the post_logout_redirect_uri.
+// @Description Ends the user session and redirects to the login page or the post_logout_redirect_uri. Per OIDC Session Management 1.0, post_logout_redirect_uri must match a client's registered redirect URI.
 // @Tags OAuth2
 // @Produce json
-// @Param post_logout_redirect_uri query string false "URI to redirect after logout"
+// @Param post_logout_redirect_uri query string false "URI to redirect after logout (must match a client's registered redirect URI)"
+// @Param client_id query string false "Client identifier (recommended when using post_logout_redirect_uri)"
 // @Success 302 {string} string "Redirect to login or post_logout_redirect_uri"
 // @Router /logout [get]
 func (h *Handler) Logout(c *gin.Context) {
@@ -445,6 +471,13 @@ func (h *Handler) Logout(c *gin.Context) {
 	}
 	redirect := c.Query("post_logout_redirect_uri")
 	if redirect != "" {
+		// Per OIDC Session Management: validate post_logout_redirect_uri
+		// against client's registered redirect URIs
+		clientID := c.Query("client_id")
+		if !h.Server.IsRedirectURIRegistered(clientID, redirect) {
+			c.Redirect(http.StatusFound, "/login")
+			return
+		}
 		c.Redirect(http.StatusFound, redirect)
 		return
 	}
@@ -459,6 +492,81 @@ func (h *Handler) SetupPasswordAuth() {
 		}
 		return userID, nil
 	})
+}
+
+// Revoke godoc
+// @Summary OAuth 2.0 Token Revocation Endpoint
+// @Description Revokes an access token or refresh token per RFC 7009. The token_type_hint parameter is optional but recommended. If the token is not found, the endpoint still returns 200 per RFC 7009 §2.2.
+// @Tags OAuth2
+// @Accept application/x-www-form-urlencoded
+// @Param Authorization header string false "Client credentials via HTTP Basic: Basic base64(client_id:client_secret)"
+// @Param client_id formData string false "Client identifier (required if not using Authorization header)"
+// @Param client_secret formData string false "Client secret (required if not using Authorization header)"
+// @Param token formData string true "The token to revoke"
+// @Param token_type_hint formData string false "Hint about the type of token: access_token or refresh_token" Enums(access_token, refresh_token)
+// @Success 200 {string} string "Token revoked or not found (both return 200 per RFC 7009)"
+// @Failure 401 {object} model.ErrorResponse
+// @Router /oauth/revoke [post]
+func (h *Handler) Revoke(c *gin.Context) {
+	headerClientID, headerClientSecret := parseBasicAuth(c.GetHeader("Authorization"))
+
+	bodyClientID := c.PostForm("client_id")
+	bodyClientSecret := c.PostForm("client_secret")
+
+	var clientID, clientSecret string
+	if headerClientID != "" {
+		clientID = headerClientID
+		clientSecret = headerClientSecret
+		if bodyClientID != "" && bodyClientID != headerClientID {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, model.ErrorResponse{
+				Error:            "invalid_client",
+				ErrorDescription: "conflicting client_id in Authorization header and request body",
+			})
+			return
+		}
+	} else {
+		clientID = bodyClientID
+		clientSecret = bodyClientSecret
+	}
+
+	if !h.Server.ValidateClient(clientID, clientSecret) {
+		c.Header("WWW-Authenticate", `Basic realm="OAuth2"`)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, model.ErrorResponse{
+			Error:            "invalid_client",
+			ErrorDescription: "client authentication failed",
+		})
+		return
+	}
+
+	token := c.PostForm("token")
+	if token == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, model.ErrorResponse{
+			Error:            "invalid_request",
+			ErrorDescription: "token parameter is required",
+		})
+		return
+	}
+
+	tokenTypeHint := c.PostForm("token_type_hint")
+
+	err := h.Server.RevokeToken(token, tokenTypeHint, clientID)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "invalid_client") {
+		c.Header("WWW-Authenticate", `Basic realm="OAuth2"`)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, model.ErrorResponse{
+			Error:            service.ExtractOAuthError(err.Error()),
+			ErrorDescription: err.Error(),
+		})
+		return
+	}
+	c.AbortWithStatusJSON(http.StatusBadRequest, model.ErrorResponse{
+		Error:            service.ExtractOAuthError(err.Error()),
+		ErrorDescription: err.Error(),
+		})
+		return
+	}
+
+	c.Status(http.StatusOK)
 }
 
 // parseBasicAuth extracts client_id and client_secret from the Authorization header
@@ -506,8 +614,17 @@ func (h *Handler) readSessionData(sess session.Store) *service.SessionData {
 	rv, _ := sess.Get("ReturnURI")
 	returnURI, _ := rv.(string)
 
+	var authTime int64
+	at, _ := sess.Get("AuthTime")
+	if atVal, ok := at.(int64); ok {
+		authTime = atVal
+	} else if atFloat, ok := at.(float64); ok {
+		authTime = int64(atFloat)
+	}
+
 	return &service.SessionData{
 		LoggedInUserID: userID,
 		ReturnURI:      returnURI,
+		AuthTime:       authTime,
 	}
 }
