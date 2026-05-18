@@ -7,7 +7,6 @@ import (
 	"github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/server"
 )
 
-// UserInfoService handles OIDC UserInfo endpoint business logic.
 type UserInfoService struct {
 	Server    *server.Server
 	UserStore *model.UserStore
@@ -23,6 +22,10 @@ func (s *UserInfoService) GetUserInfo(authHeader string) (*model.UserInfoRespons
 		return nil, fmt.Errorf("invalid_token: %v", err)
 	}
 
+	if !server.ContainsScope(ti.Scope, "openid") {
+		return nil, fmt.Errorf("invalid_scope: openid scope is required for UserInfo endpoint per OIDC Core 1.0 §5.1")
+	}
+
 	userID := ti.UserID
 	user, ok := s.UserStore.GetByID(userID)
 	if !ok {
@@ -30,9 +33,9 @@ func (s *UserInfoService) GetUserInfo(authHeader string) (*model.UserInfoRespons
 	}
 
 	return &model.UserInfoResponse{
-		Sub:           userID,
-		Name:          user.Name,
-		Email:         user.Email,
+		Sub:          userID,
+		Name:         user.Name,
+		Email:        user.Email,
 		EmailVerified: user.Email != "",
 	}, nil
 }

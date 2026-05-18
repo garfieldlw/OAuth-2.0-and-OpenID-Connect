@@ -70,15 +70,18 @@ type OIDCDiscovery struct {
 	TokenEndpoint                    string   `json:"token_endpoint"`
 	UserInfoEndpoint                 string   `json:"userinfo_endpoint"`
 	JWKSETEndpoint                   string   `json:"jwks_uri"`
-	RegistrationEndpoint             string   `json:"registration_endpoint,omitempty"`
+	EndSessionEndpoint               string   `json:"end_session_endpoint,omitempty"`
+	RevocationEndpoint               string   `json:"revocation_endpoint,omitempty"`
 	ScopesSupported                  []string `json:"scopes_supported"`
 	ResponseTypesSupported           []string `json:"response_types_supported"`
+	ResponseModesSupported           []string `json:"response_modes_supported,omitempty"`
 	GrantTypesSupported              []string `json:"grant_types_supported"`
 	SubjectTypesSupported            []string `json:"subject_types_supported"`
 	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"`
 	ClaimsSupported                  []string `json:"claims_supported"`
 	CodeChallengeMethodsSupported    []string `json:"code_challenge_methods_supported,omitempty"`
+	ClaimsParameterSupported         bool     `json:"claims_parameter_supported"`
 }
 
 type IDTokenClaims struct {
