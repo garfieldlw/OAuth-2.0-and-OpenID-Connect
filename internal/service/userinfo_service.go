@@ -32,10 +32,15 @@ func (s *UserInfoService) GetUserInfo(authHeader string) (*model.UserInfoRespons
 		return nil, fmt.Errorf("user_not_found: user not found")
 	}
 
-	return &model.UserInfoResponse{
-		Sub:          userID,
-		Name:         user.Name,
-		Email:        user.Email,
-		EmailVerified: user.Email != "",
-	}, nil
+	resp := &model.UserInfoResponse{
+		Sub: userID,
+	}
+	if server.ContainsScope(ti.Scope, "profile") {
+		resp.Name = user.Name
+	}
+	if server.ContainsScope(ti.Scope, "email") {
+		resp.Email = user.Email
+		resp.EmailVerified = user.Email != ""
+	}
+	return resp, nil
 }

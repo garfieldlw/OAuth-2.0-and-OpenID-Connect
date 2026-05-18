@@ -67,11 +67,12 @@ func (g *TokenGenerator) GenerateIDToken(clientID, userID, nonce string, authTim
 		claims["nonce"] = nonce
 	}
 	if user != nil {
-		if user.Email != "" {
+		// Per OIDC Core 1.0 §5.4: only include claims for granted scopes
+		if ContainsScope(scope, "email") && user.Email != "" {
 			claims["email"] = user.Email
 			claims["email_verified"] = user.Email != ""
 		}
-		if user.Name != "" {
+		if ContainsScope(scope, "profile") && user.Name != "" {
 			claims["name"] = user.Name
 		}
 	}
