@@ -12,10 +12,20 @@ import (
 )
 
 type Client struct {
-	ID           string
-	Secret       string
-	RedirectURIs []string
-	Scopes       []string
+	ID              string
+	Secret          string
+	RedirectURIs    []string
+	Scopes          []string
+	AllowedGrantTypes []string
+}
+
+func (c *Client) IsGrantTypeAllowed(grantType string) bool {
+	for _, gt := range c.AllowedGrantTypes {
+		if gt == grantType {
+			return true
+		}
+	}
+	return false
 }
 
 type AuthorizationCode struct {
@@ -28,6 +38,7 @@ type AuthorizationCode struct {
 	ResponseType        string
 	CodeChallenge       string
 	CodeChallengeMethod string
+	AuthTime            int64
 	ExpiresAt           time.Time
 }
 
@@ -134,6 +145,10 @@ func (s *TokenStore) GetRefreshToken(token string) (*TokenInfo, bool) {
 		return nil, false
 	}
 	ti, _ := v.(*TokenInfo)
+	if time.Now().After(ti.ExpiresAt) {
+		s.refreshTokens.Delete(token)
+		return nil, false
+	}
 	return ti, true
 }
 

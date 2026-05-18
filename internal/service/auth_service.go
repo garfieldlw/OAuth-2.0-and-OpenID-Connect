@@ -23,6 +23,7 @@ type SessionData struct {
 	LoggedInUserID   string
 	LoggedInUsername string
 	ReturnURI        string
+	AuthTime         int64
 }
 
 type LoginResult struct {
