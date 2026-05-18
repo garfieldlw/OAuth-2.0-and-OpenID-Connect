@@ -14,8 +14,6 @@ func VerifyPKCE(challenge, method, verifier string) bool {
 		h := sha256.Sum256([]byte(verifier))
 		computed := base64.RawURLEncoding.EncodeToString(h[:])
 		return computed == challenge
-	case "plain":
-		return verifier == challenge
 	default:
 		return false
 	}
