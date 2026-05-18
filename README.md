@@ -5,6 +5,8 @@
 
 A native Go implementation of an **OAuth 2.1** Authorization Server and **OpenID Connect 1.0** Provider. No external OAuth2 libraries — all protocol logic is implemented from scratch.
 
+> **This project is built entirely using [vibe coding](https://en.wikipedia.org/wiki/Vibe_coding)** — all code, from the OAuth2/OIDC protocol implementation to the React frontend, was written through AI-assisted development with natural language prompts, not manually authored line by line.
+
 > OpenID Connect 1.0 is a simple identity layer on top of the OAuth 2.0 protocol. This project implements both protocols natively in Go, following OAuth 2.1 (RFC 9728) security recommendations.
 
 ## Features
