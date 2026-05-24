@@ -13,20 +13,21 @@ import (
 )
 
 type Config struct {
-	TokenRateLimit int
+	TokenRateLimit  int
 	TokenRateWindow time.Duration
-	WebDistDir string
+	WebDistDir      string
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		TokenRateLimit: 10,
+		TokenRateLimit:  10,
 		TokenRateWindow: time.Minute,
-		WebDistDir: "./web/dist",
+		WebDistDir:      "./web/dist",
 	}
 }
 
 func Setup(engine *gin.Engine, h *handler.Handler, cfg *Config) {
+	engine.Use(middleware.RequestLogger())
 	engine.Use(middleware.CORS())
 	engine.Use(middleware.Session())
 
