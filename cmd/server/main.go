@@ -13,13 +13,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-session/session/v3"
 
+	docs "github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/docs"
 	"github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/handler"
 	"github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/model"
 	"github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/oidc"
 	"github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/router"
 	"github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/server"
 	"github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/service"
-	docs "github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/docs"
 )
 
 // @title OAuth 2.0 + OpenID Connect Server
@@ -109,7 +109,8 @@ func main() {
 	h := handler.NewHandler(srv, discovery, jwksBuilder, userStore, config, authSvc, userInfoSvc, tokenSvc)
 	h.SetupPasswordAuth()
 
-	g := gin.Default()
+	g := gin.New()
+	g.Use(gin.Recovery())
 	routerCfg := router.DefaultConfig()
 	router.Setup(g, h, routerCfg)
 
