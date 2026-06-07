@@ -21,24 +21,35 @@ Go server implementing OAuth 2.1 + OpenID Connect 1.0 (identity provider / autho
 ## Directory Layout
 
 ```
-cmd/server/main.go → Entrypoint: wires server, routes, session, Swagger UI, rate limiting, RSA key loading
+cmd/server/main.go → Entrypoint: wires server, routes, session, Swagger UI, rate limiting, RSA key loading; defers srv.Close()
 internal/
-  handler/handler.go → Gin handlers for all endpoints (Authorize, Token, UserInfo, Revoke, etc.)
-  server/
-    server.go → Server struct, NewServer(), RegisterClient(), ValidateBearerToken(), RevokeToken(), IsRedirectURIRegistered()
-    store.go → ClientStore, AuthCodeStore, TokenStore (sync.Map in-memory)
-    token.go → TokenGenerator: JWT RS256 access/id/refresh/code generation + validation
-    authorize.go → Authorize(): authorization code flow only (implicit/hybrid removed per OAuth 2.1)
-    grant.go → Token(): dispatches by grant_type → authorization_code/password/client_credentials/refresh_token
-    pkce.go → VerifyPKCE(): S256-only code verifier validation
-  oidc/oidc.go → JWKSBuilder, ComputeKeyID (RFC 7638), DiscoveryBuilder
-  model/model.go → User, UserStore, AppConfig, OIDCDiscovery, IDTokenClaims, Swagger models
-  service/
-    auth_service.go → Login authentication and consent decision logic
-    token_service.go → Token endpoint business logic and error mapping
-    userinfo_service.go → OIDC UserInfo endpoint business logic (requires openid scope)
-  docs/ → Generated Swagger docs (swagger.json, swagger.yaml, docs.go)
-  templates/ → HTML templates (login.html, auth.html, error.html)
+handler/
+handler.go → Handler struct, NewHandler(), parseBasicAuth(), readSessionData() (shared helpers)
+login.go → Login handler (GET/POST /api/login)
+auth.go → Auth handler (GET/POST /api/auth — consent decision)
+authorize.go → Authorize handler (GET/POST /oauth/authorize)
+token.go → Token handler (POST /oauth/token)
+revoke.go → Revoke handler (POST /oauth/revoke)
+userinfo.go → UserInfo handler (GET/POST /userinfo)
+discovery.go → Discovery + JWKS handlers (/.well-known/*)
+server/
+server.go → Server struct, NewServer(), RegisterClient(), ValidateClient(), ValidateBearerToken(), RevokeToken(), IsRedirectURIRegistered(), Close()
+store.go → ClientStore, AuthCodeStore, TokenStore (sync.Map in-memory with background cleanup goroutines)
+token.go → TokenGenerator: JWT RS256 access/id/refresh/code generation + validation (all return errors)
+authorize.go → Authorize(): authorization code flow only (implicit/hybrid removed per OAuth 2.1); AuthorizeError embeds *OAuthError
+grant.go → Token(): dispatches by grant_type; validateAndAuthenticate() + issueTokenPair() helpers
+pkce.go → VerifyPKCE(): S256-only code verifier validation (constant-time comparison via subtle.ConstantTimeCompare)
+errors.go → OAuthError struct + 8 constructor functions (ErrInvalidClient, ErrInvalidGrant, etc.)
+model/model.go → User, UserStore (dual-index + RWMutex + bcrypt), AppConfig, OIDCDiscovery, Swagger request/response models
+service/
+auth_service.go → Login authentication (bcrypt) and consent decision logic; ExtractOAuthError() fallback
+token_service.go → Token endpoint business logic and error mapping (errors.As + TokenError)
+userinfo_service.go → OIDC UserInfo endpoint business logic (requires openid scope)
+middleware/middleware.go → CORS, session, rate-limit (maxVisitors cap + cleanupLocked), request logger (sensitive key redaction)
+router/router.go → Route definitions and middleware wiring
+oidc/oidc.go → JWKSBuilder, ComputeKeyID (RFC 7638), DiscoveryBuilder
+docs/ → Generated Swagger docs (swagger.json, swagger.yaml, docs.go)
+templates/ → HTML templates (login.html, auth.html, error.html)
 ```
 
 ## Architecture
@@ -53,14 +64,16 @@ internal/
 
 ```
 Server {
-  Clients *ClientStore        // Registered OAuth2 clients
-  AuthCodes *AuthCodeStore    // Pending authorization codes
-  Tokens *TokenStore          // Active access + refresh tokens
-  Generator *TokenGenerator   // JWT RS256 generator (access, id, refresh, code)
-  UserStore *model.UserStore  // User identity store
-  PasswordAuthFunc func(...)  // Password grant handler (set via SetPasswordAuthHandler)
+Clients *ClientStore // Registered OAuth2 clients
+AuthCodes *AuthCodeStore // Pending authorization codes
+Tokens *TokenStore // Active access + refresh tokens
+Generator *TokenGenerator // JWT RS256 generator (access, id, refresh, code)
+UserStore *model.UserStore // User identity store
+PasswordAuthFunc func(ctx context.Context, clientID, username, password string) (string, error)
 }
 ```
+
+`Server.Close()` stops background cleanup goroutines for `AuthCodeStore` and `TokenStore`. Called via `defer srv.Close()` in `main.go`.
 
 ### Client struct (`internal/server/store.go`)
 
@@ -127,12 +140,14 @@ ID token inclusion is decided by `ShouldIncludeIDToken(scope, userID, userStore)
 All in-memory via `sync.Map`. Interface-compatible for future DB backends:
 
 - **ClientStore**: `GetByID()`, `Set()` — registered clients (id, secret, redirect URIs, scopes, allowed grant types)
-- **AuthCodeStore**: `Create()`, `Get()`, `Delete()` — 1-minute expiry, single-use (deleted on exchange)
-- **TokenStore**: `CreateAccessToken()`, `GetAccessToken()`, `DeleteAccessToken()`, `CreateRefreshToken()`, `GetRefreshToken()`, `DeleteRefreshToken()` — both access and refresh tokens have expiry checks on retrieval; refresh tokens are rotated (old deleted, new created on exchange)
+- **AuthCodeStore**: `Create()`, `Get()`, `Delete()` — 1-minute expiry, single-use (deleted on exchange); background cleanup goroutine with `stopCh` channel, stopped via `Close()`
+- **TokenStore**: `CreateAccessToken()`, `GetAccessToken()`, `DeleteAccessToken()`, `CreateRefreshToken()`, `GetRefreshToken()`, `DeleteRefreshToken()` — both access and refresh tokens have expiry checks on retrieval; refresh tokens are rotated (old deleted, new created on exchange); background cleanup goroutine with `stopCh` channel, stopped via `Close()`
+
+`generateRandomString(byteLen int) (string, error)` — uses `crypto/rand` and propagates errors (returns `server_error` wrapped error on failure).
 
 ### PKCE (`internal/server/pkce.go`)
 
-`VerifyPKCE(challenge, method, verifier)` — if `challenge` is empty, returns true (PKCE optional at verification time, but required at authorization). Supports `S256` only (SHA-256 + base64url). The `plain` method is removed per OAuth 2.1 security recommendations.
+`VerifyPKCE(challenge, method, verifier)` — if `challenge` is empty, returns true (PKCE optional at verification time, but required at authorization). Supports `S256` only (SHA-256 + base64url). The `plain` method is removed per OAuth 2.1 security recommendations. S256 comparison uses `subtle.ConstantTimeCompare` to prevent timing attacks.
 
 ### OIDC Layer (`internal/oidc/oidc.go`)
 
@@ -294,32 +309,42 @@ import (
 
 ### Error Handling
 
-**Error format convention** (server layer): `fmt.Errorf("oauth_error_code: human-readable description")`
-
-The error code before the colon is the OAuth 2.0 standard error code, extracted by `service.ExtractOAuthError()`:
+**Primary error type** (`internal/server/errors.go`): `OAuthError` struct with `Code` and `Description` fields, plus 8 constructor functions:
 
 ```go
-// Server layer — use fmt.Errorf with OAuth error code prefix
-return nil, fmt.Errorf("invalid_client: authentication failed")
-return nil, fmt.Errorf("invalid_grant: authorization code not found or expired")
-return nil, fmt.Errorf("invalid_scope: scope %q is not allowed for client %q", s, client.ID)
-return nil, fmt.Errorf("unsupported_grant_type: %s", req.GrantType)
-return nil, fmt.Errorf("unauthorized_client: password grant is not allowed for this client")
+// Server layer — use OAuthError constructors for protocol errors
+return nil, ErrInvalidClient("authentication failed")
+return nil, ErrInvalidGrant("authorization code not found or expired")
+return nil, ErrInvalidScope(fmt.Sprintf("scope %q is not allowed for client %q", s, client.ID))
+return nil, ErrUnsupportedGrantType(req.GrantType)
+return nil, ErrUnauthorizedClient("password grant is not allowed for this client")
+return nil, ErrInvalidRequest("missing required parameter")
+return nil, ErrUnsupportedResponseType("only 'code' is supported per OAuth 2.1")
+return nil, ErrServerError("internal error")
 
-// Custom error types for structured errors
-type AuthorizeError struct {    // internal/server/authorize.go
-    Code        string
-    Description string
+// For internal error wrapping (not OAuth protocol errors), use fmt.Errorf with %w
+return nil, fmt.Errorf("server_error: failed to sign token: %w", err)
+```
+
+**Custom error types for structured errors**:
+
+```go
+// AuthorizeError (internal/server/authorize.go) — embeds *OAuthError, adds RedirectURI + State
+type AuthorizeError struct {
+    *OAuthError
     RedirectURI string
-    State       string
+    State string
 }
 
-type TokenError struct {         // internal/service/token_service.go
-    Code        string
+// TokenError (internal/service/token_service.go) — carries HTTP status code
+type TokenError struct {
+    Code string
     Description string
-    HTTPStatus  int
+    HTTPStatus int
 }
 ```
+
+**Error propagation flow**: Server layer returns `*OAuthError` → Service layer uses `errors.As(err, &oauthErr)` to map to `*TokenError` with HTTP status → Handler layer reads `*TokenError` for HTTP response. The `service.ExtractOAuthError()` function remains as a fallback for non-structured errors (string-parsed error code prefix).
 
 **OAuth 2.0 error codes used** (must match RFC 6749 §5.2 and extensions):
 
@@ -332,6 +357,7 @@ type TokenError struct {         // internal/service/token_service.go
 | `unsupported_grant_type` | 400 | Unknown or disallowed grant_type |
 | `unsupported_response_type` | 400 | response_type other than `code` |
 | `unauthorized_client` | 400 | Client not allowed to use this grant type |
+| `server_error` | 400 | Internal server error (random gen failure, signing failure, etc.) |
 | `invalid_token` | 401 | Bearer token validation failed |
 | `user_not_found` | 404 | UserInfo endpoint: user ID not in UserStore |
 | `slow_down` | 429 | Rate limit exceeded |
@@ -373,19 +399,20 @@ c.Header("Pragma", "no-cache")
 ### Server Layer Conventions
 
 - **Pure protocol logic**: OAuth2/OIDC spec implementation only. No HTTP awareness.
-- **Error format**: `fmt.Errorf("oauth_error_code: description")` — handler/service maps to HTTP status
+- **Error format**: Use `OAuthError` constructors from `errors.go` for protocol errors. For internal errors (e.g. crypto/rand failure, signing failure), use `fmt.Errorf` with `%w` wrapping and `server_error` prefix.
 - **Return pattern**: `(*Result, error)` — nil result on error, non-nil on success
 - **Stores**: In-memory via `sync.Map`. All store methods are goroutine-safe. Store constructors follow `NewXxxStore()` pattern.
-- **Token generation**: All via `TokenGenerator` — RSA-2048 RS256 for JWTs, `crypto/rand` for opaque tokens. Never use `math/rand`.
+- **Token generation**: All via `TokenGenerator` — RSA-2048 RS256 for JWTs, `crypto/rand` for opaque tokens. Never use `math/rand`. `GenerateRefreshToken()` and `GenerateAuthorizationCode()` return errors (propagated from `crypto/rand`).
+- **Resource cleanup**: `AuthCodeStore` and `TokenStore` run background cleanup goroutines. Call `Close()` (via `Server.Close()`) to stop them.
 
 ### Security-Critical Coding Rules
 
 - **Client secret comparison**: ALWAYS use `subtle.ConstantTimeCompare()` — never `==`
 - **Random generation**: ALWAYS use `crypto/rand` — never `math/rand`
 - **Secrets in logs**: NEVER log client secrets, tokens, authorization codes, or passwords
-- **Password storage**: Current demo uses plaintext — future production MUST use bcrypt
+- **Password storage**: bcrypt via `golang.org/x/crypto/bcrypt` — `NewUserStore()` hashes passwords at creation; `AuthService.Authenticate()` uses `bcrypt.CompareHashAndPassword()`
 - **Error messages**: Do not leak internal state in error descriptions (e.g., "invalid credentials" not "password mismatch for user admin")
-- **PKCE verification**: S256 only. Never accept `plain` method.
+- **PKCE verification**: S256 only. Never accept `plain` method. S256 comparison uses `subtle.ConstantTimeCompare` to prevent timing attacks.
 
 ### Swagger Annotations
 
@@ -431,7 +458,7 @@ type User struct {
 
 1. Define request/response structs in `internal/model/model.go`
 2. Add business logic in the appropriate `service/` or `server/` file
-3. Add handler method in `internal/handler/handler.go` with Swagger annotations
+3. Add handler method in the appropriate `internal/handler/` file with Swagger annotations
 4. Register route in `internal/router/router.go`
 5. Regenerate Swagger docs: `swag init -g cmd/server/main.go -o ./docs --parseDependency --parseInternal`
 6. Verify: `go build ./...`, `go vet ./...`, `gofmt -l .`
@@ -458,14 +485,16 @@ type User struct {
 - Token generation, signing, and validation (RSA-2048 RS256, kid via RFC 7638 thumbprint)
 - Authorization code flow — PKCE required (S256 only per OAuth 2.1), code binding, redirect URI strict matching (exact match)
 - Constant-time client secret comparison (`subtle.ConstantTimeCompare`)
+- Constant-time PKCE S256 verification (`subtle.ConstantTimeCompare`)
 - Session/cookie handling — httpOnly, SameSite=Lax (dev), Secure+Strict (prod via `OAUTH_SECURE_COOKIE`)
 - `auth_time` tracked from login through session → auth code → ID token
 - `post_logout_redirect_uri` validation against registered client URIs in logout
-- Rate limiting on token endpoint (10 req/min/IP)
+- Rate limiting on token endpoint (10 req/min/IP, maxVisitors cap 10000, cleanup goroutine)
 - Client secret storage — never log or expose
 - Scope validation and enforcement (`openid` scope required for OIDC, required for UserInfo)
 - Client grant type enforcement — each grant handler validates `IsGrantTypeAllowed()`
 - Token revocation validates client ownership before deleting tokens
 - Authorization code 1-minute expiry with single-use (deleted on exchange)
 - Refresh token expiry check on retrieval (24h TTL)
+- Password hashing via bcrypt (`golang.org/x/crypto/bcrypt`)
 - .env file is gitignored — use it for secrets, never commit credentials

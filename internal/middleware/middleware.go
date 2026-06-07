@@ -63,10 +63,11 @@ func Session() gin.HandlerFunc {
 }
 
 type rateLimiter struct {
-	mu       sync.Mutex
-	visitors map[string]*visitorInfo
-	limit    int
-	window   time.Duration
+	mu          sync.Mutex
+	visitors    map[string]*visitorInfo
+	limit       int
+	window      time.Duration
+	maxVisitors int
 }
 
 type visitorInfo struct {
@@ -77,9 +78,10 @@ type visitorInfo struct {
 // RateLimit limits requests per IP within a time window. Returns 429 when exceeded.
 func RateLimit(limit int, window time.Duration) gin.HandlerFunc {
 	rl := &rateLimiter{
-		visitors: make(map[string]*visitorInfo),
-		limit:    limit,
-		window:   window,
+		visitors:    make(map[string]*visitorInfo),
+		limit:       limit,
+		window:      window,
+		maxVisitors: 10000,
 	}
 	go rl.cleanup()
 	return func(c *gin.Context) {
@@ -101,6 +103,9 @@ func (rl *rateLimiter) allow(key string) bool {
 	now := time.Now()
 	v, ok := rl.visitors[key]
 	if !ok || now.After(v.resetAt) {
+		if len(rl.visitors) >= rl.maxVisitors {
+			rl.cleanupLocked(now)
+		}
 		rl.visitors[key] = &visitorInfo{count: 1, resetAt: now.Add(rl.window)}
 		return true
 	}
@@ -233,16 +238,19 @@ func generateRequestID() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+func (rl *rateLimiter) cleanupLocked(now time.Time) {
+	for k, v := range rl.visitors {
+		if now.After(v.resetAt) {
+			delete(rl.visitors, k)
+		}
+	}
+}
+
 func (rl *rateLimiter) cleanup() {
 	for {
 		time.Sleep(rl.window)
 		rl.mu.Lock()
-		now := time.Now()
-		for k, v := range rl.visitors {
-			if now.After(v.resetAt) {
-				delete(rl.visitors, k)
-			}
-		}
+		rl.cleanupLocked(time.Now())
 		rl.mu.Unlock()
 	}
 }

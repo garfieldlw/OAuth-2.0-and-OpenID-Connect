@@ -12,10 +12,10 @@ import (
 )
 
 type Client struct {
-	ID              string
-	Secret          string
-	RedirectURIs    []string
-	Scopes          []string
+	ID                string
+	Secret            string
+	RedirectURIs      []string
+	Scopes            []string
 	AllowedGrantTypes []string
 }
 
@@ -74,11 +74,40 @@ func (s *ClientStore) Set(client *Client) {
 }
 
 type AuthCodeStore struct {
-	codes sync.Map
+	codes  sync.Map
+	stopCh chan struct{}
 }
 
 func NewAuthCodeStore() *AuthCodeStore {
-	return &AuthCodeStore{}
+	s := &AuthCodeStore{
+		stopCh: make(chan struct{}),
+	}
+	go s.cleanupLoop()
+	return s
+}
+
+func (s *AuthCodeStore) cleanupLoop() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			s.codes.Range(func(key, value interface{}) bool {
+				ac, _ := value.(*AuthorizationCode)
+				if now.After(ac.ExpiresAt) {
+					s.codes.Delete(key)
+				}
+				return true
+			})
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+func (s *AuthCodeStore) Close() {
+	close(s.stopCh)
 }
 
 func (s *AuthCodeStore) Create(code *AuthorizationCode) error {
@@ -106,10 +135,46 @@ func (s *AuthCodeStore) Delete(code string) {
 type TokenStore struct {
 	accessTokens  sync.Map
 	refreshTokens sync.Map
+	stopCh        chan struct{}
 }
 
 func NewTokenStore() *TokenStore {
-	return &TokenStore{}
+	s := &TokenStore{
+		stopCh: make(chan struct{}),
+	}
+	go s.cleanupLoop()
+	return s
+}
+
+func (s *TokenStore) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			s.accessTokens.Range(func(key, value interface{}) bool {
+				ti, _ := value.(*TokenInfo)
+				if now.After(ti.ExpiresAt) {
+					s.accessTokens.Delete(key)
+				}
+				return true
+			})
+			s.refreshTokens.Range(func(key, value interface{}) bool {
+				ti, _ := value.(*TokenInfo)
+				if now.After(ti.ExpiresAt) {
+					s.refreshTokens.Delete(key)
+				}
+				return true
+			})
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+func (s *TokenStore) Close() {
+	close(s.stopCh)
 }
 
 func (s *TokenStore) CreateAccessToken(token *TokenInfo) error {
@@ -156,10 +221,13 @@ func (s *TokenStore) DeleteRefreshToken(token string) {
 	s.refreshTokens.Delete(token)
 }
 
-func generateRandomString(byteLen int) string {
+func generateRandomString(byteLen int) (string, error) {
 	b := make([]byte, byteLen)
-	rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", fmt.Errorf("server_error: failed to generate random string: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func ContainsScope(scope, target string) bool {
@@ -226,7 +294,7 @@ func ValidateClientScope(client *Client, requestedScope string) (string, error) 
 
 	for _, s := range requested {
 		if !allowed[s] {
-			return "", fmt.Errorf("invalid_scope: scope %q is not allowed for client %q", s, client.ID)
+			return "", ErrInvalidScope(fmt.Sprintf("scope %q is not allowed for client %q", s, client.ID))
 		}
 	}
 

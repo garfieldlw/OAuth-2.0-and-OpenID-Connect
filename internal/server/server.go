@@ -12,11 +12,11 @@ import (
 )
 
 type Server struct {
-	Clients     *ClientStore
-	AuthCodes   *AuthCodeStore
-	Tokens      *TokenStore
-	Generator   *TokenGenerator
-	UserStore   *model.UserStore
+	Clients   *ClientStore
+	AuthCodes *AuthCodeStore
+	Tokens    *TokenStore
+	Generator *TokenGenerator
+	UserStore *model.UserStore
 
 	PasswordAuthFunc func(ctx context.Context, clientID, username, password string) (string, error)
 }
@@ -34,10 +34,10 @@ func NewServer(cfg *model.AppConfig, userStore *model.UserStore) *Server {
 
 func (s *Server) RegisterClient(id, secret string, redirectURIs []string, scopes []string, allowedGrantTypes []string) {
 	s.Clients.Set(&Client{
-		ID:               id,
-		Secret:           secret,
-		RedirectURIs:     redirectURIs,
-		Scopes:           scopes,
+		ID:                id,
+		Secret:            secret,
+		RedirectURIs:      redirectURIs,
+		Scopes:            scopes,
 		AllowedGrantTypes: allowedGrantTypes,
 	})
 }
@@ -53,6 +53,11 @@ func (s *Server) ValidateClient(id, secret string) bool {
 
 func (s *Server) SetPasswordAuthHandler(fn func(ctx context.Context, clientID, username, password string) (string, error)) {
 	s.PasswordAuthFunc = fn
+}
+
+func (s *Server) Close() {
+	s.AuthCodes.Close()
+	s.Tokens.Close()
 }
 
 func (s *Server) IsRedirectURIRegistered(clientID, redirectURI string) bool {
@@ -99,7 +104,7 @@ func (s *Server) ValidateBearerToken(tokenString string) (*TokenInfo, error) {
 func (s *Server) RevokeToken(token, tokenTypeHint, clientID string) error {
 	client, ok := s.Clients.GetByID(clientID)
 	if !ok {
-		return fmt.Errorf("invalid_client: client not found")
+		return ErrInvalidClient("client not found")
 	}
 	_ = client
 
@@ -108,7 +113,7 @@ func (s *Server) RevokeToken(token, tokenTypeHint, clientID string) error {
 		ti, ok := s.Tokens.GetRefreshToken(token)
 		if ok {
 			if ti.ClientID != clientID {
-				return fmt.Errorf("invalid_client: token was not issued to this client")
+				return ErrInvalidClient("token was not issued to this client")
 			}
 			s.Tokens.DeleteRefreshToken(token)
 			s.Tokens.DeleteAccessToken(ti.AccessToken)
@@ -117,7 +122,7 @@ func (s *Server) RevokeToken(token, tokenTypeHint, clientID string) error {
 		ti, ok := s.Tokens.GetAccessToken(token)
 		if ok {
 			if ti.ClientID != clientID {
-				return fmt.Errorf("invalid_client: token was not issued to this client")
+				return ErrInvalidClient("token was not issued to this client")
 			}
 			s.Tokens.DeleteAccessToken(token)
 		}

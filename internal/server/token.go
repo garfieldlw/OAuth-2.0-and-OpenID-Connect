@@ -83,11 +83,11 @@ func (g *TokenGenerator) GenerateIDToken(clientID, userID, nonce string, authTim
 	return token.SignedString(g.PrivateKey)
 }
 
-func (g *TokenGenerator) GenerateRefreshToken() string {
+func (g *TokenGenerator) GenerateRefreshToken() (string, error) {
 	return generateRandomString(32)
 }
 
-func (g *TokenGenerator) GenerateAuthorizationCode() string {
+func (g *TokenGenerator) GenerateAuthorizationCode() (string, error) {
 	return generateRandomString(24)
 }
 

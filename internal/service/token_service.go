@@ -1,9 +1,9 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/server"
 )
@@ -34,15 +34,24 @@ func (e *TokenError) Error() string {
 func (s *TokenService) ProcessToken(req *server.TokenRequest) (*server.TokenResponse, error) {
 	resp, err := s.Server.Token(req)
 	if err != nil {
-		errMsg := err.Error()
-		status := http.StatusBadRequest
-		if strings.HasPrefix(errMsg, "invalid_client") {
-			status = http.StatusUnauthorized
+		var oauthErr *server.OAuthError
+		if errors.As(err, &oauthErr) {
+			status := http.StatusBadRequest
+			if oauthErr.Code == "invalid_client" {
+				status = http.StatusUnauthorized
+			}
+			return nil, &TokenError{
+				Code:        oauthErr.Code,
+				Description: oauthErr.Description,
+				HTTPStatus:  status,
+			}
 		}
+		// For non-OAuth errors (e.g. wrapped server errors), still try to extract error code from string
+		errMsg := err.Error()
 		return nil, &TokenError{
 			Code:        ExtractOAuthError(errMsg),
 			Description: errMsg,
-			HTTPStatus:  status,
+			HTTPStatus:  http.StatusBadRequest,
 		}
 	}
 	return resp, nil

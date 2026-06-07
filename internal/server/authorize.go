@@ -25,36 +25,28 @@ type AuthorizeResult struct {
 }
 
 type AuthorizeError struct {
-	Code        string
-	Description string
+	*OAuthError
 	RedirectURI string
 	State       string
-}
-
-func (e *AuthorizeError) Error() string {
-	return fmt.Sprintf("%s: %s", e.Code, e.Description)
 }
 
 func (s *Server) Authorize(req *AuthorizeRequest) (*AuthorizeResult, error) {
 	client, ok := s.Clients.GetByID(req.ClientID)
 	if !ok {
 		return nil, &AuthorizeError{
-			Code:        "invalid_client",
-			Description: fmt.Sprintf("client %s not found", req.ClientID),
+			OAuthError: ErrInvalidClient(fmt.Sprintf("client %s not found", req.ClientID)),
 		}
 	}
 
 	if !validateRedirectURI(client.RedirectURIs, req.RedirectURI) {
 		return nil, &AuthorizeError{
-			Code:        "invalid_request",
-			Description: "redirect_uri does not match any registered redirect URI for this client",
+			OAuthError: ErrInvalidRequest("redirect_uri does not match any registered redirect URI for this client"),
 		}
 	}
 
 	if req.RedirectURI == "" {
 		return nil, &AuthorizeError{
-			Code:        "invalid_request",
-			Description: "redirect_uri is required",
+			OAuthError: ErrInvalidRequest("redirect_uri is required"),
 		}
 	}
 
@@ -63,8 +55,7 @@ func (s *Server) Authorize(req *AuthorizeRequest) (*AuthorizeResult, error) {
 	scope, err := ValidateClientScope(client, req.Scope)
 	if err != nil {
 		return nil, &AuthorizeError{
-			Code:        "invalid_scope",
-			Description: err.Error(),
+			OAuthError:  ErrInvalidScope(err.Error()),
 			RedirectURI: req.RedirectURI,
 			State:       req.State,
 		}
@@ -73,8 +64,7 @@ func (s *Server) Authorize(req *AuthorizeRequest) (*AuthorizeResult, error) {
 
 	if req.CodeChallenge == "" {
 		return nil, &AuthorizeError{
-			Code:        "invalid_request",
-			Description: "PKCE code_challenge is required per OAuth 2.1 (RFC 9728 §7.1)",
+			OAuthError:  ErrInvalidRequest("PKCE code_challenge is required per OAuth 2.1 (RFC 9728 §7.1)"),
 			RedirectURI: req.RedirectURI,
 			State:       req.State,
 		}
@@ -82,8 +72,7 @@ func (s *Server) Authorize(req *AuthorizeRequest) (*AuthorizeResult, error) {
 
 	if req.CodeChallengeMethod != "S256" {
 		return nil, &AuthorizeError{
-			Code:        "invalid_request",
-			Description: "code_challenge_method must be S256 per OAuth 2.1 (RFC 9728 §7.1)",
+			OAuthError:  ErrInvalidRequest("code_challenge_method must be S256 per OAuth 2.1 (RFC 9728 §7.1)"),
 			RedirectURI: req.RedirectURI,
 			State:       req.State,
 		}
@@ -91,8 +80,7 @@ func (s *Server) Authorize(req *AuthorizeRequest) (*AuthorizeResult, error) {
 
 	if req.ResponseType != "code" {
 		return nil, &AuthorizeError{
-			Code:        "unsupported_response_type",
-			Description: fmt.Sprintf("%s (implicit and hybrid flows are removed per OAuth 2.1)", req.ResponseType),
+			OAuthError:  ErrUnsupportedResponseType(fmt.Sprintf("%s (implicit and hybrid flows are removed per OAuth 2.1)", req.ResponseType)),
 			RedirectURI: req.RedirectURI,
 			State:       req.State,
 		}
@@ -102,7 +90,10 @@ func (s *Server) Authorize(req *AuthorizeRequest) (*AuthorizeResult, error) {
 }
 
 func (s *Server) authorizeCode(req *AuthorizeRequest) (*AuthorizeResult, error) {
-	code := s.Generator.GenerateAuthorizationCode()
+	code, err := s.Generator.GenerateAuthorizationCode()
+	if err != nil {
+		return nil, fmt.Errorf("server_error: failed to generate authorization code: %w", err)
+	}
 
 	s.AuthCodes.Create(&AuthorizationCode{
 		Code:                code,

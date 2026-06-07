@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/garfieldlw/OAuth-2.0-and-OpenID-Connect/internal/model"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // AuthService handles login authentication and authorization decisions.
@@ -34,7 +35,10 @@ type LoginResult struct {
 
 func (s *AuthService) Authenticate(username, password string) (userID string, ok bool) {
 	user, found := s.UserStore.GetByUsername(username)
-	if !found || user.Password != password {
+	if !found {
+		return "", false
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
 		return "", false
 	}
 	return user.ID, true

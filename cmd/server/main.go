@@ -119,6 +119,7 @@ func main() {
 	log.Printf("Token endpoint: %s/oauth/token", config.Issuer)
 	log.Printf("Discovery: %s/.well-known/openid-configuration", config.Issuer)
 	log.Printf("JWKS: %s/.well-known/jwks.json", config.Issuer)
+	defer srv.Close()
 	log.Fatal(g.Run(":9096"))
 }
 

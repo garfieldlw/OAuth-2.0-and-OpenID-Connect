@@ -39,57 +39,43 @@ func (s *Server) Token(req *TokenRequest) (*TokenResponse, error) {
 	case "refresh_token":
 		return s.grantRefreshToken(req)
 	default:
-		return nil, fmt.Errorf("unsupported_grant_type: %s", req.GrantType)
+		return nil, ErrUnsupportedGrantType(req.GrantType)
 	}
 }
 
-func (s *Server) grantAuthorizationCode(req *TokenRequest) (*TokenResponse, error) {
-	if !s.ValidateClient(req.ClientID, req.ClientSecret) {
-		return nil, fmt.Errorf("invalid_client: authentication failed")
+// validateAndAuthenticate validates client credentials and checks that the client
+// is allowed to use the specified grant type.
+func (s *Server) validateAndAuthenticate(clientID, clientSecret, grantType string) (*Client, error) {
+	if !s.ValidateClient(clientID, clientSecret) {
+		return nil, ErrInvalidClient("authentication failed")
 	}
-
-	client, _ := s.Clients.GetByID(req.ClientID)
-	if !client.IsGrantTypeAllowed("authorization_code") {
-		return nil, fmt.Errorf("unauthorized_client: authorization_code grant is not allowed for this client")
+	client, _ := s.Clients.GetByID(clientID)
+	if !client.IsGrantTypeAllowed(grantType) {
+		return nil, ErrUnauthorizedClient(fmt.Sprintf("%s grant is not allowed for this client", grantType))
 	}
+	return client, nil
+}
 
-	authCode, ok := s.AuthCodes.Get(req.Code)
-	if !ok {
-		return nil, fmt.Errorf("invalid_grant: authorization code not found or expired")
-	}
-
-	s.AuthCodes.Delete(req.Code)
-
-	if authCode.ClientID != req.ClientID {
-		return nil, fmt.Errorf("invalid_grant: authorization code was not issued to this client")
-	}
-
-	if authCode.RedirectURI != req.RedirectURI {
-		return nil, fmt.Errorf("invalid_grant: redirect_uri mismatch")
-	}
-
-	if !VerifyPKCE(authCode.CodeChallenge, authCode.CodeChallengeMethod, req.CodeVerifier) {
-		return nil, fmt.Errorf("invalid_grant: PKCE verification failed")
-	}
-
-	if _, err := ValidateClientScope(client, authCode.Scope); err != nil {
-		return nil, fmt.Errorf("invalid_scope: authorization code scope no longer permitted for this client")
-	}
-
-	accessToken, expiresAt, err := s.Generator.GenerateAccessToken(authCode.ClientID, authCode.UserID, authCode.Scope)
+// issueTokenPair generates an access token and refresh token, stores both, and returns
+// a partially populated TokenResponse. The caller should set IDToken if applicable.
+func (s *Server) issueTokenPair(clientID, userID, scope string) (*TokenResponse, error) {
+	accessToken, expiresAt, err := s.Generator.GenerateAccessToken(clientID, userID, scope)
 	if err != nil {
 		return nil, err
 	}
 
-	refreshToken := s.Generator.GenerateRefreshToken()
+	refreshToken, err := s.Generator.GenerateRefreshToken()
+	if err != nil {
+		return nil, fmt.Errorf("server_error: failed to generate refresh token: %w", err)
+	}
 	refreshExpiry := s.Generator.RefreshExpiryTime()
 
 	s.Tokens.CreateAccessToken(&TokenInfo{
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
-		Scope:       authCode.Scope,
-		UserID:      authCode.UserID,
-		ClientID:    authCode.ClientID,
+		Scope:       scope,
+		UserID:      userID,
+		ClientID:    clientID,
 		ExpiresAt:   expiresAt,
 	})
 
@@ -97,18 +83,53 @@ func (s *Server) grantAuthorizationCode(req *TokenRequest) (*TokenResponse, erro
 		AccessToken:  accessToken,
 		TokenType:    "Bearer",
 		RefreshToken: refreshToken,
-		Scope:        authCode.Scope,
-		UserID:       authCode.UserID,
-		ClientID:     authCode.ClientID,
+		Scope:        scope,
+		UserID:       userID,
+		ClientID:     clientID,
 		ExpiresAt:    refreshExpiry,
 	})
 
-	resp := &TokenResponse{
+	return &TokenResponse{
 		AccessToken:  accessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    int64(s.Generator.AccessExpiry.Seconds()),
 		RefreshToken: refreshToken,
-		Scope:        authCode.Scope,
+		Scope:        scope,
+	}, nil
+}
+
+func (s *Server) grantAuthorizationCode(req *TokenRequest) (*TokenResponse, error) {
+	client, err := s.validateAndAuthenticate(req.ClientID, req.ClientSecret, "authorization_code")
+	if err != nil {
+		return nil, err
+	}
+
+	authCode, ok := s.AuthCodes.Get(req.Code)
+	if !ok {
+		return nil, ErrInvalidGrant("authorization code not found or expired")
+	}
+
+	s.AuthCodes.Delete(req.Code)
+
+	if authCode.ClientID != req.ClientID {
+		return nil, ErrInvalidGrant("authorization code was not issued to this client")
+	}
+
+	if authCode.RedirectURI != req.RedirectURI {
+		return nil, ErrInvalidGrant("redirect_uri mismatch")
+	}
+
+	if !VerifyPKCE(authCode.CodeChallenge, authCode.CodeChallengeMethod, req.CodeVerifier) {
+		return nil, ErrInvalidGrant("PKCE verification failed")
+	}
+
+	if _, err := ValidateClientScope(client, authCode.Scope); err != nil {
+		return nil, ErrInvalidScope("authorization code scope no longer permitted for this client")
+	}
+
+	resp, err := s.issueTokenPair(authCode.ClientID, authCode.UserID, authCode.Scope)
+	if err != nil {
+		return nil, err
 	}
 
 	if ShouldIncludeIDToken(authCode.Scope, authCode.UserID, s.UserStore) {
@@ -123,17 +144,13 @@ func (s *Server) grantAuthorizationCode(req *TokenRequest) (*TokenResponse, erro
 }
 
 func (s *Server) grantPassword(req *TokenRequest) (*TokenResponse, error) {
-	if !s.ValidateClient(req.ClientID, req.ClientSecret) {
-		return nil, fmt.Errorf("invalid_client: authentication failed")
+	client, err := s.validateAndAuthenticate(req.ClientID, req.ClientSecret, "password")
+	if err != nil {
+		return nil, err
 	}
 
 	if s.PasswordAuthFunc == nil {
-		return nil, fmt.Errorf("unauthorized_client: password grant not configured")
-	}
-
-	client, _ := s.Clients.GetByID(req.ClientID)
-	if !client.IsGrantTypeAllowed("password") {
-		return nil, fmt.Errorf("unauthorized_client: password grant is not allowed for this client")
+		return nil, ErrUnauthorizedClient("password grant not configured")
 	}
 
 	scope, err := ValidateClientScope(client, req.Scope)
@@ -143,44 +160,14 @@ func (s *Server) grantPassword(req *TokenRequest) (*TokenResponse, error) {
 
 	userID, err := s.PasswordAuthFunc(context.Background(), req.ClientID, req.Username, req.Password)
 	if err != nil {
-		return nil, fmt.Errorf("invalid_grant: %v", err)
+		return nil, ErrInvalidGrant(err.Error())
 	}
 
 	authTime := time.Now().Unix()
 
-	accessToken, expiresAt, err := s.Generator.GenerateAccessToken(req.ClientID, userID, scope)
+	resp, err := s.issueTokenPair(req.ClientID, userID, scope)
 	if err != nil {
 		return nil, err
-	}
-
-	refreshToken := s.Generator.GenerateRefreshToken()
-	refreshExpiry := s.Generator.RefreshExpiryTime()
-
-	s.Tokens.CreateAccessToken(&TokenInfo{
-		AccessToken: accessToken,
-		TokenType:   "Bearer",
-		Scope:       scope,
-		UserID:      userID,
-		ClientID:    req.ClientID,
-		ExpiresAt:   expiresAt,
-	})
-
-	s.Tokens.CreateRefreshToken(refreshToken, &TokenInfo{
-		AccessToken:  accessToken,
-		TokenType:    "Bearer",
-		RefreshToken: refreshToken,
-		Scope:        scope,
-		UserID:       userID,
-		ClientID:     req.ClientID,
-		ExpiresAt:    refreshExpiry,
-	})
-
-	resp := &TokenResponse{
-		AccessToken:  accessToken,
-		TokenType:    "Bearer",
-		ExpiresIn:    int64(s.Generator.AccessExpiry.Seconds()),
-		RefreshToken: refreshToken,
-		Scope:        scope,
 	}
 
 	if ShouldIncludeIDToken(scope, userID, s.UserStore) {
@@ -195,13 +182,9 @@ func (s *Server) grantPassword(req *TokenRequest) (*TokenResponse, error) {
 }
 
 func (s *Server) grantClientCredentials(req *TokenRequest) (*TokenResponse, error) {
-	if !s.ValidateClient(req.ClientID, req.ClientSecret) {
-		return nil, fmt.Errorf("invalid_client: authentication failed")
-	}
-
-	client, _ := s.Clients.GetByID(req.ClientID)
-	if !client.IsGrantTypeAllowed("client_credentials") {
-		return nil, fmt.Errorf("unauthorized_client: client_credentials grant is not allowed for this client")
+	client, err := s.validateAndAuthenticate(req.ClientID, req.ClientSecret, "client_credentials")
+	if err != nil {
+		return nil, err
 	}
 
 	scope, err := ValidateClientScope(client, req.Scope)
@@ -209,7 +192,7 @@ func (s *Server) grantClientCredentials(req *TokenRequest) (*TokenResponse, erro
 		return nil, err
 	}
 	if ContainsScope(scope, "openid") {
-		return nil, fmt.Errorf("invalid_scope: openid scope is not allowed for client_credentials grant")
+		return nil, ErrInvalidScope("openid scope is not allowed for client_credentials grant")
 	}
 
 	accessToken, expiresAt, err := s.Generator.GenerateAccessToken(req.ClientID, "", scope)
@@ -235,73 +218,39 @@ func (s *Server) grantClientCredentials(req *TokenRequest) (*TokenResponse, erro
 }
 
 func (s *Server) grantRefreshToken(req *TokenRequest) (*TokenResponse, error) {
-	if !s.ValidateClient(req.ClientID, req.ClientSecret) {
-		return nil, fmt.Errorf("invalid_client: authentication failed")
-	}
-
-	client, _ := s.Clients.GetByID(req.ClientID)
-	if !client.IsGrantTypeAllowed("refresh_token") {
-		return nil, fmt.Errorf("unauthorized_client: refresh_token grant is not allowed for this client")
+	client, err := s.validateAndAuthenticate(req.ClientID, req.ClientSecret, "refresh_token")
+	if err != nil {
+		return nil, err
 	}
 
 	oldInfo, ok := s.Tokens.GetRefreshToken(req.RefreshToken)
 	if !ok {
-		return nil, fmt.Errorf("invalid_grant: refresh token not found")
+		return nil, ErrInvalidGrant("refresh token not found")
 	}
 
 	if oldInfo.ClientID != req.ClientID {
-		return nil, fmt.Errorf("invalid_grant: refresh token was not issued to this client")
+		return nil, ErrInvalidGrant("refresh token was not issued to this client")
 	}
 
 	scope := req.Scope
 	if scope == "" {
 		scope = oldInfo.Scope
 	}
-	scope, err := ValidateClientScope(client, scope)
+	scope, err = ValidateClientScope(client, scope)
 	if err != nil {
 		return nil, err
 	}
 
 	if req.Scope != "" && !isScopeNarrowed(scope, oldInfo.Scope) {
-		return nil, fmt.Errorf("invalid_scope: requested scope exceeds the scope granted in the original authorization")
+		return nil, ErrInvalidScope("requested scope exceeds the scope granted in the original authorization")
 	}
 
 	s.Tokens.DeleteRefreshToken(req.RefreshToken)
 	s.Tokens.DeleteAccessToken(oldInfo.AccessToken)
 
-	accessToken, expiresAt, err := s.Generator.GenerateAccessToken(oldInfo.ClientID, oldInfo.UserID, scope)
+	resp, err := s.issueTokenPair(oldInfo.ClientID, oldInfo.UserID, scope)
 	if err != nil {
 		return nil, err
-	}
-
-	newRefreshToken := s.Generator.GenerateRefreshToken()
-	refreshExpiry := s.Generator.RefreshExpiryTime()
-
-	s.Tokens.CreateAccessToken(&TokenInfo{
-		AccessToken: accessToken,
-		TokenType:   "Bearer",
-		Scope:       scope,
-		UserID:      oldInfo.UserID,
-		ClientID:    oldInfo.ClientID,
-		ExpiresAt:   expiresAt,
-	})
-
-	s.Tokens.CreateRefreshToken(newRefreshToken, &TokenInfo{
-		AccessToken:  accessToken,
-		TokenType:    "Bearer",
-		RefreshToken: newRefreshToken,
-		Scope:        scope,
-		UserID:       oldInfo.UserID,
-		ClientID:     oldInfo.ClientID,
-		ExpiresAt:    refreshExpiry,
-	})
-
-	resp := &TokenResponse{
-		AccessToken:  accessToken,
-		TokenType:    "Bearer",
-		ExpiresIn:    int64(s.Generator.AccessExpiry.Seconds()),
-		RefreshToken: newRefreshToken,
-		Scope:        scope,
 	}
 
 	if ShouldIncludeIDToken(scope, oldInfo.UserID, s.UserStore) {
